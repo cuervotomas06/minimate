@@ -16,10 +16,10 @@ RUTA_APP = "../app.py"
 
 
 def abrir_app(fen=None):
-    """Abre la app con profundidad 1 (para que el bot responda rápido).
+    """Abre la app en nivel Principiante (para que el bot responda rápido).
     Si se pasa un FEN, arranca desde esa posición."""
     at = AppTest.from_file(RUTA_APP, default_timeout=60).run()
-    at.slider[0].set_value(1).run()
+    at.select_slider(key="nivel").set_value("Principiante").run()
     if fen is not None:
         at.session_state.tablero = chess.Board(fen)
         at.run()
@@ -139,3 +139,21 @@ def test_texto_y_deshacer_siguen_andando():
     at.button(key="deshacer").click().run()
     assert jugadas(at) == []
     assert not at.exception
+
+
+# --- Niveles de dificultad -------------------------------------------------
+
+def test_selector_de_nivel_muestra_los_niveles():
+    from src.niveles import NIVEL_POR_DEFECTO, NIVELES
+    at = AppTest.from_file(RUTA_APP, default_timeout=60).run()
+    selector = at.select_slider(key="nivel")
+    assert list(selector.options) == list(NIVELES)
+    assert selector.value == NIVEL_POR_DEFECTO
+    assert "mira" in at.sidebar.caption[0].value  # descripción del nivel
+
+
+def test_cambiar_de_nivel_no_reinicia_la_partida():
+    at = abrir_app()
+    at.text_input(key="texto_jugada").input("e4").run()
+    at.select_slider(key="nivel").set_value("Fácil").run()
+    assert len(jugadas(at)) == 2

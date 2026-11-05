@@ -17,6 +17,7 @@ import streamlit as st
 
 from src.componente_tablero import procesar_valor, tablero_interactivo
 from src.motor import mejor_jugada
+from src.niveles import NIVEL_POR_DEFECTO, NIVELES, describir
 
 st.set_page_config(page_title="MiniMate", page_icon="♟")
 
@@ -184,8 +185,11 @@ with st.sidebar:
     st.header("Opciones")
     # Cambiar de color arranca una partida nueva (on_change).
     st.radio("Jugás con", ["Blancas", "Negras"], key="color", on_change=nueva_partida)
-    profundidad = st.slider("Profundidad de MiniMate", 1, 5, 3,
-                            help="Más profundidad = juega mejor pero piensa más lento.")
+    # Dificultad: de menos a más Elo. Se puede cambiar en medio de la partida.
+    nombre_nivel = st.select_slider("Dificultad de MiniMate", options=list(NIVELES),
+                                    value=NIVEL_POR_DEFECTO, key="nivel")
+    st.caption(describir(nombre_nivel))
+    nivel = NIVELES[nombre_nivel]
     st.button("Nueva partida", on_click=nueva_partida, width="stretch")
 
 
@@ -250,6 +254,6 @@ with columna_panel:
 
 if not tablero.is_game_over() and tablero.turn != color_humano():
     with st.spinner("MiniMate está pensando..."):
-        jugada = mejor_jugada(tablero, profundidad)
+        jugada = mejor_jugada(tablero, nivel["profundidad"], con_quietud=nivel["quietud"])
     tablero.push(jugada)
     st.rerun()

@@ -3,6 +3,7 @@
 import chess
 
 from src.evaluacion import evaluar
+from src.tablas import TABLAS
 
 
 def test_posicion_inicial_da_cero():
@@ -12,9 +13,12 @@ def test_posicion_inicial_da_cero():
 
 
 def test_sin_dama_negra_da_900():
-    # Igual que la inicial pero sin la dama negra: blancas tienen 900 de más.
+    # Igual que la inicial pero sin la dama negra: blancas tienen 900 de material
+    # de más. Como evaluar también suma las tablas de posición, al sacar la dama
+    # también desaparece el bonus de su casilla (d8), así que lo sumamos acá.
     tablero = chess.Board("rnb1kbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1")
-    assert evaluar(tablero) == 900
+    bonus_dama_en_d8 = TABLAS[chess.QUEEN][chess.D8]
+    assert evaluar(tablero) == 900 + bonus_dama_en_d8
 
 
 def test_mate_del_pastor():

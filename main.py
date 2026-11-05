@@ -8,6 +8,9 @@ while not board.is_game_over():
 
     if board.turn == chess.WHITE:
         texto = input("Tu jugada (ej: e2e4): ")
+        if texto == "salir":
+            print("Partida abandonada.")
+            break
         try:
             jugada = chess.Move.from_uci(texto)
         except ValueError:

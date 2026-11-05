@@ -10,3 +10,9 @@ __pycache__/
 
 # Secretos de Streamlit (para más adelante)
 .streamlit/secrets.toml
+
+# Motores externos (Stockfish): el ejecutable no se sube
+motores/
+
+# Partidas generadas por medir_elo.py / medir_niveles.py
+*.pgn

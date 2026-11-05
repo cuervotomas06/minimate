@@ -309,11 +309,108 @@ function crearTablero(args) {
 
   $('#cancelar-promocion').on('click', cancelarPromocion);
 
-  // Si cambia el ancho (por ejemplo al girar el celular), redibujamos.
-  $(window).on('resize', () => {
-    tablero.resize();
-    dibujarMarcas();
-    ajustarAltura();
+  prepararPantallaTactil();
+
+  // Tamaño inicial, y de nuevo cada vez que cambie el ancho del iframe
+  // o se gire la pantalla.
+  ajustarTamano();
+  $(window).on('resize', pedirAjusteDeTamano);
+  if (screen.orientation) screen.orientation.addEventListener('change', pedirAjusteDeTamano);
+  try {
+    // La página de Streamlit (el "padre" del iframe): si cambia su alto
+    // (por ejemplo al girar el celular) también recalculamos.
+    window.parent.addEventListener('resize', pedirAjusteDeTamano);
+  } catch (error) {
+    // Si el navegador no nos deja acceder al padre, alcanza con lo de arriba.
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Pantallas táctiles
+// ---------------------------------------------------------------------------
+// Problema: al arrastrar una pieza con el dedo, la página también se deslizaba.
+// chessboard.js escucha "touchmove" en window, y los navegadores tratan esos
+// listeners como "pasivos": su preventDefault() se ignora y el navegador scrollea.
+//
+// Solución:
+// 1) CSS touch-action: none (en tablero.css) avisa de antemano que en el
+//    tablero no hay que hacer scroll ni zoom.
+// 2) Listeners propios con { passive: false } que llaman a preventDefault().
+// 3) Como cancelar el touchstart también cancela el "click" que el navegador
+//    genera al tocar, detectamos el toque nosotros (en touchend).
+
+let inicioToque = null;  // { x, y } donde empezó el toque sobre el tablero
+
+function prepararPantallaTactil() {
+  const zonaTablero = document.getElementById('tablero');
+
+  zonaTablero.addEventListener('touchstart', (evento) => {
+    evento.preventDefault();  // sin scroll, sin zoom, sin "click" automático
+    const dedo = evento.touches[0];
+    inicioToque = { x: dedo.clientX, y: dedo.clientY };
+  }, { passive: false });
+
+  zonaTablero.addEventListener('touchmove', (evento) => {
+    evento.preventDefault();
+  }, { passive: false });
+
+  // Lo registramos en window DESPUÉS de crear el tablero, así corre después
+  // del touchend de chessboard.js (que es el que llama a alSoltar).
+  window.addEventListener('touchend', (evento) => {
+    if (!inicioToque) return;  // el toque no empezó en el tablero
+    const inicio = inicioToque;
+    inicioToque = null;
+
+    // Si chessboard.js ya lo manejó (arrastre, o toque en una pieza propia), listo.
+    if (ignorarClic) return;
+
+    // Si el dedo se movió mucho fue un deslizamiento, no un toque.
+    const dedo = evento.changedTouches[0];
+    if (Math.hypot(dedo.clientX - inicio.x, dedo.clientY - inicio.y) > 10) return;
+
+    // Toque en una casilla vacía o con pieza rival: lo tratamos igual que un clic.
+    const elemento = document.elementFromPoint(dedo.clientX, dedo.clientY);
+    const casilla = elemento && elemento.closest('.square-55d63');
+    if (casilla) {
+      ignorarClic = true;  // por si el navegador igual manda un click
+      alHacerClicEnCasilla(casilla.dataset.square);
+    }
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Tamaño del tablero
+// ---------------------------------------------------------------------------
+// El tablero usa todo el ancho del iframe (en la compu es la columna de la
+// izquierda, como antes; en el celular, el ancho de la pantalla). Pero no
+// puede ser más alto que lo que se ve de la pantalla (celular acostado).
+
+function ajustarTamano() {
+  const anchoDisponible = document.documentElement.clientWidth;
+
+  let altoVisible = Infinity;
+  try {
+    altoVisible = window.parent.innerHeight;  // alto de la ventana del navegador
+  } catch (error) {
+    // Sin acceso al padre: limitamos solo por el ancho.
+  }
+
+  const lado = Math.floor(Math.min(anchoDisponible, altoVisible * 0.85));
+  $('#tablero').css('width', `${lado}px`);
+  tablero.resize();   // chessboard.js recalcula el tamaño de las casillas
+  dibujarMarcas();    // resize() redibuja las casillas: volvemos a poner las marcas
+  ajustarAltura();    // el iframe tiene que medir lo mismo que el tablero
+}
+
+// Al girar la pantalla llegan varios eventos seguidos: los juntamos en uno
+// solo por cuadro de animación.
+let ajustePendiente = false;
+function pedirAjusteDeTamano() {
+  if (ajustePendiente) return;
+  ajustePendiente = true;
+  requestAnimationFrame(() => {
+    ajustePendiente = false;
+    ajustarTamano();
   });
 }
 

@@ -4,10 +4,31 @@ body {
   margin: 0;
   background: transparent;
   font-family: "Source Sans Pro", "Segoe UI", sans-serif;
+  /* Pantallas táctiles: dentro del iframe el dedo no hace scroll ni zoom. */
+  touch-action: none;
+  overscroll-behavior: none;
 }
 
 #contenedor {
   position: relative;  /* para poder poner el menú de promoción encima */
+}
+
+/* El ancho lo pone tablero.js (ajustarTamano); lo centramos por si es más
+   angosto que el iframe (celular acostado). */
+#tablero {
+  margin: 0 auto;
+}
+
+/* Tablero, casillas y piezas: sin scroll ni zoom con el dedo, sin selección
+   de texto y sin el menú que aparece al mantener apretada una imagen. */
+#tablero,
+#tablero *,
+img[data-piece] {
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+  -webkit-user-drag: none;
 }
 
 /* Sin el borde gris que trae chessboard.js. */

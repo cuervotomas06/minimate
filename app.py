@@ -6,16 +6,23 @@
 # Streamlit vuelve a correr TODO este archivo de arriba a abajo.
 # Por eso el tablero se guarda en st.session_state: es un "diccionario"
 # que sobrevive entre una corrida y la siguiente.
-
-import base64
+#
+# El tablero es un componente propio hecho en JavaScript
+# (src/componente_tablero/). Seleccionar piezas, ver destinos y arrastrar
+# pasa todo en el navegador, sin volver a correr este archivo. Recién cuando
+# completás una jugada, el componente nos manda su UCI y la procesamos acá.
 
 import chess
-import chess.svg
 import streamlit as st
 
+from src.componente_tablero import procesar_valor, tablero_interactivo
 from src.motor import mejor_jugada
 
 st.set_page_config(page_title="MiniMate", page_icon="♟")
+
+# Key fija del componente: con la misma key, Streamlit reutiliza el mismo
+# iframe en cada rerun en vez de crear uno nuevo (así no parpadea).
+KEY_TABLERO = "tablero_js"
 
 
 # ---------------------------------------------------------------------------
@@ -25,6 +32,10 @@ st.set_page_config(page_title="MiniMate", page_icon="♟")
 def color_humano():
     """Devuelve chess.WHITE o chess.BLACK según lo elegido en la barra lateral."""
     return chess.WHITE if st.session_state.color == "Blancas" else chess.BLACK
+
+
+def es_mi_turno(tablero):
+    return not tablero.is_game_over() and tablero.turn == color_humano()
 
 
 def nueva_partida():
@@ -65,7 +76,7 @@ def interpretar_jugada(tablero, texto):
 
 
 def jugar_humano():
-    """Se ejecuta al apretar Enter / "Jugar". Lee el texto y hace la jugada."""
+    """Se ejecuta al apretar Enter en el cuadro de texto. Hace la jugada escrita."""
     tablero = st.session_state.tablero
     texto = st.session_state.texto_jugada
     st.session_state.texto_jugada = ""  # vaciamos el cuadro de texto
@@ -85,6 +96,23 @@ def jugar_humano():
         st.session_state.mensaje = ""
 
 
+def jugada_del_tablero():
+    """Se ejecuta cuando el componente manda una jugada (antes de correr el archivo).
+    El valor es un diccionario {uci, fen, id}."""
+    valor = st.session_state[KEY_TABLERO]
+    nuevo_id, jugada, error = procesar_valor(
+        st.session_state.tablero, valor, st.session_state.ultimo_id_tablero, color_humano())
+
+    # Guardamos el id aunque la jugada se rechace: así no se procesa dos veces
+    # y el componente sabe que ya le contestamos.
+    st.session_state.ultimo_id_tablero = nuevo_id
+    if jugada is not None:
+        st.session_state.tablero.push(jugada)
+        st.session_state.mensaje = ""
+    elif error:
+        st.session_state.mensaje = error
+
+
 def deshacer():
     """Saca jugadas hasta haber sacado una tuya (y la respuesta del bot si la hubo)."""
     tablero = st.session_state.tablero
@@ -95,26 +123,6 @@ def deshacer():
         if tablero.turn == color_humano():
             break
     st.session_state.mensaje = ""
-
-
-def dibujar_tablero(tablero):
-    """Dibuja el tablero como imagen SVG."""
-    ultima = tablero.peek() if tablero.move_stack else None
-    # Si hay jaque, le pasamos la casilla del rey para que la pinte de rojo.
-    jaque = tablero.king(tablero.turn) if tablero.is_check() else None
-    svg = chess.svg.board(
-        tablero,
-        lastmove=ultima,
-        check=jaque,
-        orientation=color_humano(),  # tu color siempre abajo
-        size=420,
-    )
-    # Convertimos el SVG a base64 para mostrarlo como una imagen <img>.
-    svg_base64 = base64.b64encode(svg.encode("utf-8")).decode("utf-8")
-    st.markdown(
-        f'<img src="data:image/svg+xml;base64,{svg_base64}" width="420"/>',
-        unsafe_allow_html=True,
-    )
 
 
 def historial_san(tablero):
@@ -162,6 +170,8 @@ if "color" not in st.session_state:
     st.session_state.color = "Blancas"
 if "tablero" not in st.session_state:
     nueva_partida()
+if "ultimo_id_tablero" not in st.session_state:
+    st.session_state.ultimo_id_tablero = None  # id de la última jugada del componente
 
 tablero = st.session_state.tablero
 
@@ -176,7 +186,7 @@ with st.sidebar:
     st.radio("Jugás con", ["Blancas", "Negras"], key="color", on_change=nueva_partida)
     profundidad = st.slider("Profundidad de MiniMate", 1, 5, 3,
                             help="Más profundidad = juega mejor pero piensa más lento.")
-    st.button("Nueva partida", on_click=nueva_partida, use_container_width=True)
+    st.button("Nueva partida", on_click=nueva_partida, width="stretch")
 
 
 # ---------------------------------------------------------------------------
@@ -188,15 +198,22 @@ st.title("♟ MiniMate")
 columna_tablero, columna_panel = st.columns([3, 2])
 
 with columna_tablero:
-    dibujar_tablero(tablero)
+    tablero_interactivo(
+        tablero,
+        color_humano=color_humano(),
+        mi_turno=es_mi_turno(tablero),
+        id_respondido=st.session_state.ultimo_id_tablero,
+        key=KEY_TABLERO,
+        on_change=jugada_del_tablero,
+    )
 
 with columna_panel:
     # Estado de la partida (jaque, mate, tablas...).
     tipo, texto = texto_estado(tablero)
     getattr(st, tipo)(texto)  # llama a st.info / st.warning / st.success / st.error
 
-    # Cuadro para escribir la jugada. Al apretar Enter se llama a jugar_humano.
-    st.text_input("Tu jugada (e2e4, e4, Nf3...)", key="texto_jugada",
+    # Cuadro para escribir la jugada (alternativa al tablero).
+    st.text_input("O escribí tu jugada (e2e4, e4, Nf3...)", key="texto_jugada",
                   on_change=jugar_humano)
 
     # Mensaje de error de la última jugada, si lo hubo.
@@ -206,7 +223,7 @@ with columna_panel:
     # Para poder deshacer tiene que existir al menos una jugada tuya.
     # Con negras, la primera jugada siempre es de MiniMate.
     minimo = 1 if color_humano() == chess.WHITE else 2
-    st.button("↩ Deshacer mi última jugada", on_click=deshacer,
+    st.button("↩ Deshacer mi última jugada", key="deshacer", on_click=deshacer,
               disabled=len(tablero.move_stack) < minimo)
 
     # Historial: agrupamos de a dos (blancas, negras) por número de jugada.
@@ -228,10 +245,11 @@ with columna_panel:
 # ---------------------------------------------------------------------------
 # Va al final a propósito: así primero se dibuja el tablero con TU jugada
 # y recién después el bot piensa. También cubre el caso de jugar con negras:
-# al empezar le toca a MiniMate y juega solo.
+# al empezar le toca a MiniMate y juega solo. Al volver a correr el archivo
+# (st.rerun) el componente recibe el FEN nuevo y anima la jugada del bot.
 
 if not tablero.is_game_over() and tablero.turn != color_humano():
     with st.spinner("MiniMate está pensando..."):
         jugada = mejor_jugada(tablero, profundidad)
     tablero.push(jugada)
-    st.rerun()  # volvemos a correr el archivo para dibujar la jugada del bot
+    st.rerun()

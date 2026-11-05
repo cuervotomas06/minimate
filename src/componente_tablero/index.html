@@ -1,0 +1,32 @@
+<!doctype html>
+<!--
+  Componente de Streamlit: tablero de ajedrez interactivo de MiniMate.
+  Streamlit muestra esta página dentro de un iframe. Se comunica con Python
+  mandando mensajes (postMessage); la lógica está en tablero.js.
+  Todas las librerías están en vendor/ (no se usa ningún CDN).
+-->
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <link rel="stylesheet" href="vendor/chessboard.min.css">
+  <link rel="stylesheet" href="tablero.css">
+  <!-- chessboard.js necesita jQuery y se carga como script "clásico". -->
+  <script src="vendor/jquery.min.js"></script>
+  <script src="vendor/chessboard.min.js"></script>
+</head>
+<body>
+  <div id="contenedor">
+    <div id="tablero"></div>
+
+    <!-- Mini menú para elegir la pieza al coronar (oculto al principio). -->
+    <div id="menu-promocion" hidden>
+      <p>Coronar como:</p>
+      <div id="opciones-promocion"></div>
+      <button id="cancelar-promocion" type="button">Cancelar</button>
+    </div>
+  </div>
+
+  <!-- tablero.js es un módulo: así puede hacer "import" de chess.js. -->
+  <script type="module" src="tablero.js"></script>
+</body>
+</html>

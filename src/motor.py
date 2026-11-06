@@ -1,6 +1,6 @@
 import math
 import chess
-from src.evaluacion import evaluar, VALORES
+from src.evaluacion import evaluar, VALORES, VALOR_MATE
 
 # Contador global: cuántas posiciones evaluó minimax (llamadas a evaluar).
 # Sirve para comparar cuánto trabajo ahorra ordenar las jugadas.
@@ -46,6 +46,31 @@ def ordenar_jugadas(board):
     # reverse=True: de mayor a menor.
     jugadas.sort(key=lambda jugada: puntaje_jugada(board, jugada), reverse=True)
     return jugadas
+
+
+# ---------------------------------------------------------------------------
+# Mates: cuántas jugadas faltan
+# ---------------------------------------------------------------------------
+# evaluar() devuelve +-VALOR_MATE para cualquier mate, esté cerca o lejos.
+# Para saber "mate en cuántas" (y para que el bot elija el mate más corto)
+# le restamos al puntaje la distancia: cuántas medias jugadas ("plies") hay
+# desde la posición donde empezó la búsqueda hasta el mate.
+#   mate en esta posición:        100000
+#   mate dentro de 3 medias jugadas: 99997
+
+def evaluar_con_distancia(board, distancia):
+    """Igual que evaluar, pero un mate más lejano vale un poco menos."""
+    valor = evaluar(board)
+    if valor == VALOR_MATE:
+        return valor - distancia
+    if valor == -VALOR_MATE:
+        return valor + distancia
+    return valor
+
+
+def es_valor_de_mate(valor):
+    """True si el puntaje es un mate (y no una ventaja de material)."""
+    return abs(valor) > VALOR_MATE - 1000
 
 
 # ---------------------------------------------------------------------------
@@ -127,14 +152,15 @@ def jugadas_ruidosas(board):
     return jugadas
 
 
-def quietud(board, alfa, beta, profundidad_extra=0):
+def quietud(board, alfa, beta, profundidad_extra=0, distancia=0):
     """Sigue buscando solo capturas hasta llegar a una posición tranquila.
 
     Idea clave ("quedarse parado", stand pat): el bando que mueve NO está
     obligado a capturar. Así que la evaluación actual es un piso: si ninguna
     captura la mejora, se queda con ese valor.
     Si está en jaque no puede "quedarse parado": hay que mirar todas las
-    jugadas para salir del jaque."""
+    jugadas para salir del jaque.
+    distancia: medias jugadas desde donde empezó la búsqueda (para los mates)."""
     global posiciones_evaluadas
     posiciones_evaluadas += 1
 
@@ -144,13 +170,13 @@ def quietud(board, alfa, beta, profundidad_extra=0):
         return 0
 
     if profundidad_extra >= PROFUNDIDAD_MAXIMA_QUIETUD:
-        return evaluar(board)
+        return evaluar_con_distancia(board, distancia)
 
     if board.is_check():
         # En jaque: todas las jugadas legales (son pocas), sin "quedarse parado".
         jugadas = ordenar_jugadas(board)
         if not jugadas:
-            return evaluar(board)  # sin jugadas y en jaque: es mate
+            return evaluar_con_distancia(board, distancia)  # en jaque y sin jugadas: mate
         mejor = -math.inf if board.turn == chess.WHITE else math.inf
     else:
         # evaluar ya detecta el ahogado (devuelve 0).
@@ -180,7 +206,7 @@ def quietud(board, alfa, beta, profundidad_extra=0):
                 continue
 
         board.push(jugada)
-        valor = quietud(board, alfa, beta, profundidad_extra + 1)
+        valor = quietud(board, alfa, beta, profundidad_extra + 1, distancia + 1)
         board.pop()
         if board.turn == chess.WHITE:
             mejor = max(mejor, valor)
@@ -198,13 +224,14 @@ def quietud(board, alfa, beta, profundidad_extra=0):
 # ---------------------------------------------------------------------------
 
 def minimax(board, profundidad, alfa=-math.inf, beta=math.inf, ordenar=True,
-            con_quietud=True):
+            con_quietud=True, distancia=0):
     """Minimax con poda alfa-beta.
     alfa: lo mejor que blancas ya tienen asegurado.
     beta: lo mejor que negras ya tienen asegurado.
     ordenar: si es True, mira primero las jugadas más prometedoras
     (así la poda corta antes).
-    con_quietud: si es True, al llegar a profundidad 0 sigue mirando capturas."""
+    con_quietud: si es True, al llegar a profundidad 0 sigue mirando capturas.
+    distancia: medias jugadas desde donde empezó la búsqueda (para los mates)."""
     # "global" hace falta para poder MODIFICAR la variable del módulo
     # desde adentro de la función (leerla no lo necesita).
     global posiciones_evaluadas
@@ -216,10 +243,10 @@ def minimax(board, profundidad, alfa=-math.inf, beta=math.inf, ordenar=True,
 
     if board.is_game_over():
         posiciones_evaluadas += 1
-        return evaluar(board)
+        return evaluar_con_distancia(board, distancia)
     if profundidad == 0:
         if con_quietud:
-            return quietud(board, alfa, beta)
+            return quietud(board, alfa, beta, 0, distancia)
         posiciones_evaluadas += 1
         return evaluar(board)
 
@@ -230,7 +257,8 @@ def minimax(board, profundidad, alfa=-math.inf, beta=math.inf, ordenar=True,
         mejor = -math.inf
         for jugada in jugadas:
             board.push(jugada)
-            valor = minimax(board, profundidad - 1, alfa, beta, ordenar, con_quietud)
+            valor = minimax(board, profundidad - 1, alfa, beta, ordenar, con_quietud,
+                            distancia + 1)
             board.pop()
             mejor = max(mejor, valor)
             alfa = max(alfa, mejor)
@@ -241,7 +269,8 @@ def minimax(board, profundidad, alfa=-math.inf, beta=math.inf, ordenar=True,
         mejor = math.inf
         for jugada in jugadas:
             board.push(jugada)
-            valor = minimax(board, profundidad - 1, alfa, beta, ordenar, con_quietud)
+            valor = minimax(board, profundidad - 1, alfa, beta, ordenar, con_quietud,
+                            distancia + 1)
             board.pop()
             mejor = min(mejor, valor)
             beta = min(beta, mejor)
@@ -250,9 +279,27 @@ def minimax(board, profundidad, alfa=-math.inf, beta=math.inf, ordenar=True,
         return mejor
 
 
-def mejor_jugada(board, profundidad=3, ordenar=True, con_quietud=True):
+def valor_jugada(board, jugada, profundidad=3, ordenar=True, con_quietud=True):
+    """Cuánto vale hacer "jugada" (mirando "profundidad" jugadas en total,
+    contando esta). Puntaje desde el punto de vista de blancas.
+    Sirve para la revisión de partidas: comparar tu jugada con la mejor."""
+    board.push(jugada)
+    valor = minimax(board, profundidad - 1, -math.inf, math.inf, ordenar, con_quietud)
+    board.pop()
+    return valor
+
+
+def mejor_jugada(board, profundidad=3, ordenar=True, con_quietud=True,
+                 devolver_valor=False):
     """Devuelve la mejor jugada para el bando que mueve.
-    ordenar y con_quietud se pueden apagar para comparar."""
+    ordenar y con_quietud se pueden apagar para comparar.
+
+    devolver_valor: si es True devuelve (jugada, valor) en vez de solo la
+    jugada. valor es la evaluación de la posición DESPUÉS de esa jugada
+    (desde el punto de vista de blancas, en centipeones), con lo mejor de
+    los dos bandos. Sale gratis: es el número que ya calculó la búsqueda.
+    Si es un mate, los mates se cuentan desde esa posición (ver
+    evaluar_con_distancia)."""
     juegan_blancas = board.turn == chess.WHITE
     mejor_valor = -math.inf if juegan_blancas else math.inf
     elegida = None
@@ -265,6 +312,8 @@ def mejor_jugada(board, profundidad=3, ordenar=True, con_quietud=True):
         valor = minimax(board, profundidad - 1, alfa, beta, ordenar, con_quietud)
         board.pop()
 
+        # Ojo: solo el valor de la MEJOR jugada es exacto. Las demás pueden
+        # haberse cortado por la poda (su valor es "a lo sumo esto").
         if juegan_blancas and valor > mejor_valor:
             mejor_valor, elegida = valor, jugada
             alfa = max(alfa, valor)
@@ -272,4 +321,8 @@ def mejor_jugada(board, profundidad=3, ordenar=True, con_quietud=True):
             mejor_valor, elegida = valor, jugada
             beta = min(beta, valor)
 
+    if devolver_valor:
+        if elegida is None:          # sin jugadas: la partida ya terminó
+            mejor_valor = evaluar(board)
+        return elegida, mejor_valor
     return elegida

@@ -106,3 +106,41 @@ def test_repeticion_vale_cero_en_la_busqueda():
     for uci in ["d1d6", "e8f7", "d6d1", "f7e8"]:
         tablero.push_uci(uci)
     assert minimax(tablero, 2) == 0
+
+
+# --- Valor de la posición (para la barra de evaluación) --------------------
+
+def test_devolver_valor_no_cambia_la_jugada():
+    # Con devolver_valor=True devuelve (jugada, valor); la jugada es la misma
+    # que sin el parámetro (así no se rompe a quien ya usaba mejor_jugada).
+    tablero = chess.Board("r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3")
+    jugada, valor = mejor_jugada(tablero, 2, devolver_valor=True)
+    assert jugada == mejor_jugada(tablero, 2)
+    assert isinstance(valor, (int, float))
+
+
+def test_valor_es_la_evaluacion_despues_de_la_jugada():
+    # A profundidad 1 sin quietud, el valor es justo evaluar() después de la jugada.
+    tablero = chess.Board("4k3/8/8/3r4/8/8/8/3QK3 w - - 0 1")
+    jugada, valor = mejor_jugada(tablero, 1, con_quietud=False, devolver_valor=True)
+    tablero.push(jugada)
+    assert valor == evaluar(tablero)
+
+
+def test_valor_de_mate_cuenta_las_jugadas():
+    from src.evaluacion import VALOR_MATE
+    # Mate en 1: después de Re8# ya es mate (distancia 0).
+    tablero = chess.Board("6k1/5ppp/8/8/8/8/5PPP/3QR1K1 w - - 0 1")
+    jugada, valor = mejor_jugada(tablero, 3, devolver_valor=True)
+    assert tablero.san(jugada) == "Re8#" and valor == VALOR_MATE
+    # Mate en 2: después de Ra7 faltan 2 medias jugadas (Kg8 Rb8#).
+    tablero = chess.Board("7k/8/8/8/8/8/R7/1R4K1 w - - 0 1")
+    jugada, valor = mejor_jugada(tablero, 3, devolver_valor=True)
+    assert tablero.san(jugada) == "Ra7" and valor == VALOR_MATE - 2
+
+
+def test_prefiere_el_mate_mas_corto():
+    # Posición de una partida real: antes daba un jaque (Qdc6+) y el mate
+    # llegaba más tarde; ahora da mate directo.
+    tablero = chess.Board("8/8/3Q4/1k6/8/7P/2Q5/4R1K1 w - - 11 74")
+    assert tablero.san(mejor_jugada(tablero, 3)) == "Re5#"

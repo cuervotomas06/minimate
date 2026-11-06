@@ -1,0 +1,166 @@
+# Ayudas para entender la partida: la barra de evaluación y la revisión
+# de partida (qué jugadas tuyas fueron imprecisiones o errores).
+#
+# Todo acá es Python "puro" (sin Streamlit), así se puede testear con pytest.
+# Convención de siempre: los valores están en centipeones (100 = un peón)
+# y desde el punto de vista de blancas (positivo = mejor para blancas).
+
+import math
+
+import chess
+
+from src.evaluacion import VALOR_MATE
+from src.motor import es_valor_de_mate, mejor_jugada, valor_jugada
+
+# ---------------------------------------------------------------------------
+# Barra de evaluación
+# ---------------------------------------------------------------------------
+
+# A partir de +10 (1000 centipeones) la barra ya se ve casi llena.
+LIMITE_BARRA = 1000
+
+
+def jugadas_hasta_mate(valor):
+    """Si el valor es un mate, cuántas jugadas del bando que gana faltan.
+    El motor guarda en el valor cuántas medias jugadas faltan: 100000 - valor."""
+    medias_jugadas = VALOR_MATE - abs(valor)
+    # Dos medias jugadas (una de cada bando) = una jugada del que da mate.
+    return math.ceil(medias_jugadas / 2)
+
+
+def formatear_evaluacion(valor):
+    """Texto para la barra: '+1.5', '-0.3', '0.0', 'M3' (mate de blancas en 3),
+    '-M2' (mate de negras en 2) o '1-0' / '0-1' si ya es mate."""
+    if es_valor_de_mate(valor):
+        jugadas = jugadas_hasta_mate(valor)
+        if jugadas == 0:
+            return "1-0" if valor > 0 else "0-1"
+        return f"M{jugadas}" if valor > 0 else f"-M{jugadas}"
+
+    peones = round(valor / 100, 1)
+    if peones == 0:
+        return "0.0"     # sin signo (y evita que aparezca "-0.0")
+    return f"{peones:+.1f}"  # el "+" hace que siempre muestre el signo
+
+
+def porcentaje_barra(valor):
+    """Qué parte de la barra (0 a 100) es blanca.
+    50 = igualdad. Usamos tanh para que el cambio sea grande cerca del 0
+    (un peón se nota) y casi nada después de +10 (ya está ganado):
+      +1 -> 61%   +3 -> 79%   +10 o más -> 94%   mate -> 100%."""
+    if es_valor_de_mate(valor):
+        return 100.0 if valor > 0 else 0.0
+    limitado = max(-LIMITE_BARRA, min(LIMITE_BARRA, valor))
+    return 50 + 45 * math.tanh(limitado / 400)
+
+
+def datos_barra(valor):
+    """Lo que necesita el componente JS para dibujar la barra."""
+    return {"texto": formatear_evaluacion(valor),
+            "porcentaje": round(porcentaje_barra(valor), 1)}
+
+
+# ---------------------------------------------------------------------------
+# Revisión de partida
+# ---------------------------------------------------------------------------
+
+# Profundidad del análisis de la revisión (con quietud).
+PROFUNDIDAD_REVISION = 2
+
+# Cuántos centipeones empeoró la evaluación por tu jugada (de mayor a menor).
+UMBRALES = [
+    (300, "error grave"),   # más de 3 peones
+    (100, "error"),         # más de 1 peón
+    (50, "imprecisión"),    # más de medio peón
+]
+
+# Para la comparación limitamos los valores a +-10 peones: pasar de +25 a +12
+# no es un error (seguís ganando fácil), pero pasar de mate a +2 sí.
+LIMITE_REVISION = 1000
+
+SIMBOLOS = {"error grave": "??", "error": "?", "imprecisión": "?!", None: ""}
+
+
+def clasificar(perdida):
+    """Nombre de la clasificación según cuánto empeoró (en centipeones).
+    Devuelve None si la jugada estuvo bien."""
+    for umbral, nombre in UMBRALES:
+        if perdida > umbral:
+            return nombre
+    return None
+
+
+def perdida_de_la_jugada(valor_mejor, valor_mia, color):
+    """Cuántos centipeones perdiste por no jugar la mejor (0 o más).
+    Ojo con la perspectiva: los valores son desde blancas. Si jugás con
+    negras, que el valor BAJE es bueno para vos, así que se da vuelta."""
+    mejor = max(-LIMITE_REVISION, min(LIMITE_REVISION, valor_mejor))
+    mia = max(-LIMITE_REVISION, min(LIMITE_REVISION, valor_mia))
+    if color == chess.WHITE:
+        perdida = mejor - mia
+    else:
+        perdida = mia - mejor
+    return max(0, perdida)  # por la poda puede salir un poquito negativo
+
+
+def revisar_partida(jugadas, color, inicial=None, profundidad=PROFUNDIDAD_REVISION,
+                    al_avanzar=None):
+    """Analiza cada jugada tuya (color) de la partida.
+
+    jugadas: lista de chess.Move desde la posición inicial.
+    inicial: tablero de la posición inicial (si es None, la de siempre).
+    al_avanzar(hechas, total): se llama después de cada jugada analizada
+    (la app lo usa para la barra de progreso).
+
+    Devuelve una lista con un diccionario por cada jugada tuya:
+      indice        posición de la jugada en la lista (0 = primera de la partida)
+      numero        número de jugada, ej: 12
+      san           tu jugada, ej: 'Qf3'
+      mejor_san     la mejor según MiniMate, ej: 'Bg4'
+      mejor_uci     la misma en UCI, para dibujar la flecha
+      valor         evaluación después de tu jugada (desde blancas)
+      perdida       centipeones que perdiste
+      clasificacion 'imprecisión' / 'error' / 'error grave' / None
+    """
+    tablero = chess.Board() if inicial is None else inicial.copy()
+
+    # Cuántas jugadas son tuyas (para la barra de progreso): si al empezar
+    # te toca a vos, son las de índice par (0, 2, 4...); si no, las impares.
+    empezas_vos = tablero.turn == color
+    total = sum(1 for i in range(len(jugadas)) if (i % 2 == 0) == empezas_vos)
+
+    resultado = []
+    for indice, jugada in enumerate(jugadas):
+        if tablero.turn == color:
+            mejor, valor_mejor = mejor_jugada(tablero, profundidad, con_quietud=True,
+                                              devolver_valor=True)
+            if jugada == mejor:
+                valor_mia = valor_mejor  # jugaste la mejor: no hace falta buscar de nuevo
+            else:
+                valor_mia = valor_jugada(tablero, jugada, profundidad, con_quietud=True)
+
+            perdida = perdida_de_la_jugada(valor_mejor, valor_mia, color)
+            resultado.append({
+                "indice": indice,
+                "numero": tablero.fullmove_number,
+                "san": tablero.san(jugada),
+                "mejor_san": tablero.san(mejor),
+                "mejor_uci": mejor.uci(),
+                "valor": valor_mia,
+                "perdida": perdida,
+                "clasificacion": clasificar(perdida),
+            })
+            if al_avanzar is not None:
+                al_avanzar(len(resultado), total)
+        tablero.push(jugada)
+
+    return resultado
+
+
+def resumen(revision):
+    """Cuántas jugadas hay de cada tipo: {'imprecisión': 2, 'error': 1, ...}."""
+    cuenta = {nombre: 0 for _, nombre in reversed(UMBRALES)}
+    for analisis in revision:
+        if analisis["clasificacion"] is not None:
+            cuenta[analisis["clasificacion"]] += 1
+    return cuenta

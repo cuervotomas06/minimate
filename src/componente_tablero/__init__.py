@@ -37,9 +37,17 @@ def piezas_svg():
 PIEZAS = piezas_svg()
 
 
-def tablero_interactivo(tablero, color_humano, mi_turno, id_respondido, key, on_change=None):
+def tablero_interactivo(tablero, color_humano, mi_turno, id_respondido, key, on_change=None,
+                        barra=None, flecha=None, reloj=None):
     """Dibuja el tablero. Cuando el usuario completa una jugada, Streamlit
-    guarda en st.session_state[key] un diccionario {uci, fen, id} y llama a on_change."""
+    guarda en st.session_state[key] un diccionario {uci, fen, id, tiempo_usado}
+    y llama a on_change. Si se le acaba el tiempo manda {tiempo_agotado, fen, id}.
+
+    Ayudas opcionales (None = no se muestran):
+    - barra: {"texto": "+1.5", "porcentaje": 61.2}  barra de evaluación
+    - flecha: "e2e4"  flecha verde (la mejor jugada, en la revisión)
+    - reloj: {"w": segundos, "b": segundos, "corre": "w" / "b" / None}
+    """
     ultima = tablero.peek().uci() if tablero.move_stack else None
     return _componente(
         fen=tablero.fen(),
@@ -48,6 +56,9 @@ def tablero_interactivo(tablero, color_humano, mi_turno, id_respondido, key, on_
         mi_turno=mi_turno,
         id_respondido=id_respondido,  # así el JS sabe que ya procesamos su jugada
         piezas=PIEZAS,
+        barra=barra,
+        flecha=flecha,
+        reloj=reloj,
         key=key,            # key fija: el iframe no se vuelve a crear en cada rerun
         on_change=on_change,
         default=None,

@@ -16,7 +16,28 @@
 </head>
 <body>
   <div id="contenedor">
-    <div id="tablero"></div>
+    <!-- Reloj del rival (arriba) y el tuyo (abajo). Ocultos si no hay reloj. -->
+    <div id="reloj-arriba" class="reloj" hidden>
+      <span class="nombre"></span><span class="tiempo"></span>
+    </div>
+
+    <div id="fila">
+      <!-- Barra de evaluación: la parte clara es la ventaja de blancas. -->
+      <div id="barra" hidden>
+        <div id="barra-blancas"></div>
+        <span id="barra-texto"></span>
+      </div>
+
+      <div id="zona-tablero">
+        <div id="tablero"></div>
+        <!-- Flecha de la mejor jugada (revisión). Va encima del tablero. -->
+        <svg id="flechas" aria-hidden="true"></svg>
+      </div>
+    </div>
+
+    <div id="reloj-abajo" class="reloj" hidden>
+      <span class="nombre"></span><span class="tiempo"></span>
+    </div>
 
     <!-- Mini menú para elegir la pieza al coronar (oculto al principio). -->
     <div id="menu-promocion" hidden>

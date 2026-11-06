@@ -36,11 +36,13 @@ def argumentos(at):
     return json.loads(componente(at).proto.json_args)
 
 
-def mandar_desde_tablero(at, uci, fen=None, id_jugada="id-1"):
+def mandar_desde_tablero(at, uci, fen=None, id_jugada="id-1", **extra):
     """Simula que el JS mandó una jugada con setComponentValue.
     Usamos _run (interno de AppTest) porque no hay un método público para
-    darle valor a un componente propio."""
+    darle valor a un componente propio.
+    extra: otros datos que manda el JS (tiempo_usado, tiempo_agotado)."""
     valor = {"uci": uci, "fen": fen or at.session_state.tablero.fen(), "id": id_jugada}
+    valor.update(extra)
     estados = at._tree.get_widget_states()        # el estado de los demás widgets
     estado = estados.widgets.add()                # + el valor del tablero
     estado.id = componente(at).proto.id
@@ -157,3 +159,147 @@ def test_cambiar_de_nivel_no_reinicia_la_partida():
     at.text_input(key="texto_jugada").input("e4").run()
     at.select_slider(key="nivel").set_value("Fácil").run()
     assert len(jugadas(at)) == 2
+
+
+# --- Barra de evaluación ---------------------------------------------------
+
+def test_barra_de_evaluacion():
+    at = abrir_app()
+    assert argumentos(at)["barra"] == {"texto": "0.0", "porcentaje": 50.0}
+    mandar_desde_tablero(at, "e2e4")
+    # El bot respondió y guardó su evaluación: la barra la usa.
+    assert len(at.session_state.evaluaciones) == 1
+    barra = argumentos(at)["barra"]
+    assert set(barra) == {"texto", "porcentaje"}
+
+
+def test_barra_se_puede_ocultar():
+    at = abrir_app()
+    at.toggle(key="mostrar_barra").set_value(False).run()
+    assert argumentos(at)["barra"] is None
+
+
+def test_barra_muestra_el_mate():
+    # Mate del loco ya jugado: la barra marca 0-1 (ganaron negras).
+    at = abrir_app()
+    tablero = chess.Board()
+    for san in "f3 e5 g4 Qh4#".split():
+        tablero.push_san(san)
+    at.session_state.tablero = tablero
+    at.run()
+    assert argumentos(at)["barra"] == {"texto": "0-1", "porcentaje": 0.0}
+
+
+# --- Reloj -----------------------------------------------------------------
+
+def test_sin_reloj_por_defecto():
+    at = abrir_app()
+    assert argumentos(at)["reloj"] is None
+
+
+def test_reloj_descuenta_el_tiempo_y_suma_el_incremento():
+    at = abrir_app()
+    at.selectbox(key="control").set_value("3+2").run()
+    assert argumentos(at)["reloj"] == {"w": 180.0, "b": 180.0, "corre": "w"}
+    # Pensé 10 segundos (lo mide el navegador): 180 - 10 + 2 = 172.
+    mandar_desde_tablero(at, "e2e4", tiempo_usado=10)
+    reloj = argumentos(at)["reloj"]
+    assert reloj["w"] == 172.0
+    assert 180.0 < reloj["b"] <= 182.0   # el bot pensó un poquito y sumó sus 2 s
+    assert reloj["corre"] == "w"         # MiniMate ya jugó: me toca
+
+
+def test_con_reloj_no_se_puede_deshacer():
+    at = abrir_app()
+    at.selectbox(key="control").set_value("5+3").run()
+    mandar_desde_tablero(at, "e2e4", tiempo_usado=1)
+    assert at.button(key="deshacer").disabled
+
+
+def test_se_me_acaba_el_tiempo():
+    at = abrir_app()
+    at.selectbox(key="control").set_value("3+2").run()
+    mandar_desde_tablero(at, None, id_jugada="t", tiempo_agotado=True)
+    assert at.session_state.perdio_por_tiempo == chess.WHITE
+    assert "acabó el tiempo" in at.error[0].value
+    assert argumentos(at)["reloj"]["corre"] is None   # ya no corre ningún reloj
+    assert argumentos(at)["mi_turno"] is False
+    # Una jugada que llega tarde no se juega.
+    mandar_desde_tablero(at, "e2e4", id_jugada="u", tiempo_usado=1)
+    assert jugadas(at) == []
+
+
+def test_jugada_que_llega_sin_tiempo_pierde():
+    at = abrir_app()
+    at.selectbox(key="control").set_value("3+2").run()
+    mandar_desde_tablero(at, "e2e4", tiempo_usado=200)   # más de los 180 que tenía
+    assert at.session_state.perdio_por_tiempo == chess.WHITE
+    assert jugadas(at) == []
+
+
+def test_al_bot_se_le_acaba_el_tiempo():
+    at = abrir_app()
+    at.selectbox(key="control").set_value("3+2").run()
+    at.session_state.tiempos = {chess.WHITE: 100.0, chess.BLACK: 0.0001}
+    mandar_desde_tablero(at, "e2e4", tiempo_usado=1)
+    assert at.session_state.perdio_por_tiempo == chess.BLACK
+    assert "Ganaste" in at.success[0].value
+
+
+# --- Revisión de partida ---------------------------------------------------
+
+def abrir_revision_del_mate_del_loco():
+    at = abrir_app()
+    tablero = chess.Board()
+    for san in "f3 e5 g4 Qh4#".split():
+        tablero.push_san(san)
+    at.session_state.tablero = tablero
+    at.run()
+    at.button(key="revisar").click().run()
+    return at
+
+
+def test_revisar_aparece_solo_al_terminar():
+    at = abrir_app()
+    assert not [b for b in at.button if b.key == "revisar"]
+
+
+def test_revision_de_la_partida():
+    at = abrir_revision_del_mate_del_loco()
+    assert not at.exception
+    revision = at.session_state.revision
+    assert [a["san"] for a in revision] == ["f3", "g4"]
+    assert revision[1]["clasificacion"] == "error grave"
+    # Resumen y lista de jugadas.
+    assert "Errores graves: **1**" in at.markdown[0].value
+    assert "g4??" in at.button(key="rev_2").label
+    # Empieza mostrando la posición final, sin poder mover.
+    args = argumentos(at)
+    assert args["mi_turno"] is False
+    assert args["fen"] == at.session_state.tablero.fen()
+    assert args["flecha"] is None          # la última jugada fue del bot
+
+
+def test_navegar_la_revision():
+    at = abrir_revision_del_mate_del_loco()
+    # Tocar g4 en la lista: el tablero muestra la posición después de g4,
+    # con una flecha hacia la mejor jugada.
+    at.button(key="rev_2").click().run()
+    args = argumentos(at)
+    despues_de_g4 = chess.Board()
+    for san in "f3 e5 g4".split():
+        despues_de_g4.push_san(san)
+    assert args["fen"] == despues_de_g4.fen()
+    assert args["flecha"] == at.session_state.revision[1]["mejor_uci"]
+    assert args["ultima"] == "g2g4"
+    # ◀ vuelve una jugada (después de e5: jugada del bot, sin flecha).
+    at.button(key="rev_anterior").click().run()
+    assert at.session_state.indice_revision == 2
+    assert argumentos(at)["flecha"] is None
+    # ▶ avanza.
+    at.button(key="rev_siguiente").click().run()
+    assert at.session_state.indice_revision == 3
+    # Nueva partida sale de la revisión.
+    at.sidebar.button[0].click().run()
+    assert at.session_state.revision is None
+    assert argumentos(at)["fen"] == chess.STARTING_FEN

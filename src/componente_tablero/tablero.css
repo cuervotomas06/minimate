@@ -114,3 +114,108 @@ body.mi-turno .square-55d63 { cursor: pointer; }
   text-decoration: underline;
   cursor: pointer;
 }
+
+/* ---- Fila: barra de evaluación + tablero ---- */
+
+#fila {
+  display: flex;
+  justify-content: center;
+  gap: 6px;
+}
+
+#zona-tablero {
+  position: relative;  /* la flecha (SVG) se ubica encima del tablero */
+}
+
+/* ---- Barra de evaluación ---- */
+
+#barra {
+  position: relative;
+  flex: none;
+  width: 26px;              /* el alto lo pone tablero.js (igual al tablero) */
+  background: #403d39;      /* la parte oscura = ventaja de negras */
+  border-radius: 3px;
+  overflow: hidden;
+}
+#barra[hidden] { display: none; }
+
+/* La parte clara crece desde el lado de blancas.
+   transition: cuando cambia el alto, se mueve suave en vez de saltar. */
+#barra-blancas {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 50%;
+  background: #f2f2f2;
+  transition: height 0.6s ease;
+}
+/* Jugando con negras, blancas está arriba: la parte clara cuelga de arriba. */
+#barra.negras-abajo #barra-blancas {
+  bottom: auto;
+  top: 0;
+}
+
+/* El número va en la punta del bando que va ganando. */
+#barra-texto {
+  position: absolute;
+  left: 0;
+  right: 0;
+  text-align: center;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: -0.3px;
+}
+#barra-texto.abajo { bottom: 4px; }
+#barra-texto.arriba { top: 4px; }
+#barra-texto.sobre-blanco { color: #403d39; }
+#barra-texto.sobre-negro { color: #f2f2f2; }
+
+/* ---- Flecha de la mejor jugada ---- */
+
+#flechas {
+  position: absolute;
+  pointer-events: none;   /* los clics pasan de largo hasta el tablero */
+  overflow: visible;
+}
+
+/* ---- Relojes ---- */
+
+.reloj {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  box-sizing: border-box;
+  height: 34px;             /* tablero.js usa este alto para calcular el tamaño */
+  margin: 3px auto;
+  color: #262730;
+  font-size: 15px;
+}
+.reloj[hidden] { display: none; }
+.reloj .nombre { font-weight: 600; }
+
+.reloj .tiempo {
+  min-width: 78px;
+  padding: 3px 10px;
+  border-radius: 5px;
+  background: #e8e8e8;
+  color: #8a8a8a;
+  font-family: "Source Code Pro", Consolas, monospace;
+  font-size: 18px;
+  font-weight: 700;
+  text-align: right;
+}
+/* El reloj que está corriendo se resalta. */
+.reloj.activo .tiempo {
+  background: #262730;
+  color: #ffffff;
+}
+/* Poco tiempo: en rojo. */
+.reloj.poco .tiempo { color: #d93636; }
+.reloj.activo.poco .tiempo { background: #d93636; color: #ffffff; }
+
+/* Si Streamlit está en tema oscuro (tablero.js pone la clase), el nombre
+   tiene que verse sobre el fondo oscuro. */
+body.oscuro .reloj { color: #fafafa; }
+body.oscuro .reloj .tiempo { background: #3a3b45; color: #9a9aa5; }
+body.oscuro .reloj.activo .tiempo { background: #fafafa; color: #262730; }

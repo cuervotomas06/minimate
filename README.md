@@ -15,7 +15,7 @@ Un bot de ajedrez escrito desde cero en Python, con una app web para jugarle, ve
 - **Tablero interactivo**: clic o arrastrar para mover, coronación con menú, funciona con el dedo en el celular.
 - **4 niveles de dificultad**, de ≈700 a ≈1650 Elo (ver [Nivel medido](#nivel-medido)).
 - **Barra de evaluación** al costado del tablero, como en las páginas de ajedrez, con la ventaja en peones (`+1.5`) o el mate (`M3`). Se puede ocultar.
-- **Reloj** opcional: 3+2, 5+3, 10+5 o 15+10. Si al bot le queda poco tiempo, piensa menos.
+- **Reloj** opcional: 3+2, 5+3, 10+5 o 15+10. Como en Lichess, cada reloj arranca recién después de la primera jugada de ese jugador. Si al bot le queda poco tiempo, piensa menos.
 - **Revisión de partida**: al terminar, MiniMate analiza tus jugadas, marca imprecisiones, errores y errores graves, y te muestra con una flecha qué tendrías que haber jugado.
 
 ## Cómo funciona por dentro

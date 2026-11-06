@@ -66,26 +66,99 @@ def es_mi_turno(tablero):
             and tablero.turn == color_humano())
 
 
+# --- Estado de la sesión ---------------------------------------------------
+# Todo lo que la app guarda en st.session_state, con su valor inicial.
+# Cada clave se inicializa POR SEPARADO si falta (ver inicializar_estado):
+# así una sesión abierta con una versión vieja de la app (que no tenía,
+# por ejemplo, el reloj) no se rompe al actualizar el código.
+# (Las claves de los widgets de la barra lateral, como "control" o "nivel",
+# las crea Streamlit con su valor por defecto: no van acá.)
+
+def valores_iniciales():
+    """Valores de una partida nueva. Es una función (y no un diccionario fijo)
+    para que cada partida tenga su propio tablero y sus propios diccionarios."""
+    return {
+        "tablero": chess.Board(),
+        "mensaje": "",
+        # Evaluación de MiniMate después de cada jugada suya:
+        # {cantidad de jugadas hechas: valor}. Sirve para la barra.
+        "evaluaciones": {},
+        # Reloj: segundos que le quedan a cada uno (None = sin reloj) y para
+        # qué reloj se calcularon (para detectar si no coinciden con el elegido).
+        "tiempos": None,
+        "reloj_de_los_tiempos": None,
+        "inicio_turno": time.time(),   # cuándo empezó tu turno
+        "perdio_por_tiempo": None,     # color que se quedó sin tiempo
+        # Revisión de partida.
+        "revision": None,              # lista de análisis (None = no estás revisando)
+        "revisar_pedido": False,       # apretaste "Revisar partida"
+        "indice_revision": 0,          # cuántas jugadas se ven en el tablero
+    }
+
+
+def inicializar_estado():
+    """Crea las claves que falten, una por una, sin tocar las que ya están."""
+    if "color" not in st.session_state:
+        st.session_state.color = "Blancas"
+    if "ultimo_id_tablero" not in st.session_state:
+        st.session_state.ultimo_id_tablero = None  # id de la última jugada del componente
+    for clave, valor in valores_iniciales().items():
+        if clave not in st.session_state:
+            st.session_state[clave] = valor
+
+
 def nueva_partida():
     """Arranca una partida desde cero."""
-    st.session_state.tablero = chess.Board()
-    st.session_state.mensaje = ""
-    # Evaluación de MiniMate después de cada jugada suya:
-    # {cantidad de jugadas hechas: valor}. Sirve para la barra.
-    st.session_state.evaluaciones = {}
-    # Reloj: segundos que le quedan a cada uno (None = sin reloj).
-    control = control_de_tiempo()
+    for clave, valor in valores_iniciales().items():
+        st.session_state[clave] = valor
+    asegurar_reloj()  # tiempos llenos si hay reloj elegido
+
+
+# --- Reloj -------------------------------------------------------------------
+
+def tiempos_validos(tiempos):
+    """True si tiempos es {blancas: segundos, negras: segundos} con números >= 0."""
+    if not isinstance(tiempos, dict):
+        return False
+    for color in chess.COLORS:
+        segundos = tiempos.get(color)
+        if not isinstance(segundos, (int, float)) or isinstance(segundos, bool) or segundos < 0:
+            return False
+    return True
+
+
+def asegurar_reloj():
+    """Deja los tiempos de acuerdo con el reloj elegido. Si están vacíos, rotos
+    o son de otro reloj, los reinicia en vez de romper la app.
+
+    Por qué hace falta: los tiempos se crean al empezar una partida, para el
+    reloj elegido en ese momento. Si el reloj elegido cambia sin que se
+    arranque una partida nueva (por ejemplo, una sesión abierta con una
+    versión vieja de la app, o el navegador que se reconecta y le devuelve
+    a Streamlit el valor que tenía el selector), los tiempos quedan en None
+    con el reloj en 3+2."""
+    nombre = st.session_state.get("control", CONTROL_POR_DEFECTO)
+    control = CONTROLES.get(nombre)
     if control is None:
         st.session_state.tiempos = None
-    else:
-        inicial, _ = control
-        st.session_state.tiempos = {chess.WHITE: float(inicial), chess.BLACK: float(inicial)}
-    st.session_state.inicio_turno = time.time()  # cuándo empezó tu turno
-    st.session_state.perdio_por_tiempo = None     # color que se quedó sin tiempo
-    # Revisión de partida.
-    st.session_state.revision = None         # lista de análisis (None = no estás revisando)
-    st.session_state.revisar_pedido = False  # apretaste "Revisar partida"
-    st.session_state.indice_revision = 0     # cuántas jugadas se ven en el tablero
+        st.session_state.reloj_de_los_tiempos = nombre
+        return
+    if (tiempos_validos(st.session_state.get("tiempos"))
+            and st.session_state.get("reloj_de_los_tiempos") == nombre):
+        return  # todo en orden
+    inicial, _ = control
+    st.session_state.tiempos = {chess.WHITE: float(inicial), chess.BLACK: float(inicial)}
+    st.session_state.reloj_de_los_tiempos = nombre
+    st.session_state.perdio_por_tiempo = None
+    st.session_state.inicio_turno = time.time()
+
+
+def ya_jugo(tablero, color):
+    """True si 'color' ya hizo al menos una jugada en la partida.
+    Como en Lichess, el reloj de cada uno empieza a correr recién después de
+    su primera jugada: la primera jugada de cada bando no gasta tiempo."""
+    empieza_color = tablero.root().turn == color  # ¿le tocaba mover primero?
+    return len(tablero.move_stack) >= (1 if empieza_color else 2)
 
 
 def interpretar_jugada(tablero, texto):
@@ -124,11 +197,13 @@ def aplicar_jugada_humana(jugada, tiempo_usado=None):
     tiempo_usado: segundos medidos por el navegador. Si no viene (jugada
     escrita en el cuadro de texto), lo medimos acá con time.time()."""
     tablero = st.session_state.tablero
-    if hay_reloj():
+    yo = color_humano()
+    # Tu primera jugada no gasta tiempo (tu reloj todavía no arrancó).
+    if hay_reloj() and ya_jugo(tablero, yo):
+        asegurar_reloj()
         if tiempo_usado is None:
             tiempo_usado = time.time() - st.session_state.inicio_turno
         _, incremento = control_de_tiempo()
-        yo = color_humano()
         st.session_state.tiempos[yo] -= max(0.0, tiempo_usado)
         if st.session_state.tiempos[yo] <= 0:
             # La jugada llegó tarde: perdiste por tiempo.
@@ -142,6 +217,9 @@ def aplicar_jugada_humana(jugada, tiempo_usado=None):
 
 def jugar_humano():
     """Se ejecuta al apretar Enter en el cuadro de texto. Hace la jugada escrita."""
+    # Los callbacks corren ANTES que el resto del archivo: si la sesión viene
+    # de una versión vieja, primero completamos las claves que falten.
+    inicializar_estado()
     tablero = st.session_state.tablero
     texto = st.session_state.texto_jugada
     st.session_state.texto_jugada = ""  # vaciamos el cuadro de texto
@@ -171,6 +249,7 @@ def jugada_del_tablero():
     """Se ejecuta cuando el componente manda algo (antes de correr el archivo).
     Puede ser una jugada {uci, fen, id, tiempo_usado} o el aviso de que se te
     acabó el tiempo {tiempo_agotado, fen, id}."""
+    inicializar_estado()  # ver jugar_humano
     valor = st.session_state[KEY_TABLERO]
     tablero = st.session_state.tablero
 
@@ -178,7 +257,10 @@ def jugada_del_tablero():
     if isinstance(valor, dict) and valor.get("tiempo_agotado"):
         if valor.get("id") != st.session_state.ultimo_id_tablero:
             st.session_state.ultimo_id_tablero = valor.get("id")
-            if hay_reloj() and not partida_terminada(tablero) and tablero.turn == color_humano():
+            # Solo vale si tu reloj ya estaba corriendo (ya hiciste tu primera jugada).
+            if (hay_reloj() and not partida_terminada(tablero)
+                    and tablero.turn == color_humano() and ya_jugo(tablero, color_humano())):
+                asegurar_reloj()
                 st.session_state.tiempos[color_humano()] = 0.0
                 st.session_state.perdio_por_tiempo = color_humano()
         return
@@ -203,6 +285,7 @@ def jugada_del_tablero():
 
 def deshacer():
     """Saca jugadas hasta haber sacado una tuya (y la respuesta del bot si la hubo)."""
+    inicializar_estado()  # ver jugar_humano
     tablero = st.session_state.tablero
     while tablero.move_stack:
         tablero.pop()
@@ -292,11 +375,14 @@ def datos_barra_para(tablero_mostrado):
 # --- Reloj -----------------------------------------------------------------
 
 def datos_reloj(tablero):
-    """Lo que necesita el reloj del componente JS (None = no se muestra)."""
+    """Lo que necesita el reloj del componente JS (None = no se muestra).
+    corre: el color cuyo reloj está corriendo, o None si ninguno (partida
+    terminada, o al que le toca todavía no hizo su primera jugada)."""
     if not hay_reloj() or en_revision():
         return None
-    corre = None  # partida terminada: ningún reloj corre
-    if not partida_terminada(tablero):
+    asegurar_reloj()  # nunca usar tiempos vacíos o de otro reloj
+    corre = None
+    if not partida_terminada(tablero) and ya_jugo(tablero, tablero.turn):
         corre = "w" if tablero.turn == chess.WHITE else "b"
     tiempos = st.session_state.tiempos
     return {"w": round(tiempos[chess.WHITE], 2), "b": round(tiempos[chess.BLACK], 2),
@@ -306,11 +392,13 @@ def datos_reloj(tablero):
 # --- Revisión de partida ---------------------------------------------------
 
 def pedir_revision():
+    inicializar_estado()  # ver jugar_humano
     st.session_state.revisar_pedido = True
 
 
 def ir_a_jugada(indice):
     """Muestra en el tablero la posición después de 'indice' jugadas."""
+    inicializar_estado()  # ver jugar_humano
     st.session_state.indice_revision = indice
 
 
@@ -342,18 +430,12 @@ def texto_jugada(analisis):
 
 
 # ---------------------------------------------------------------------------
-# Estado inicial (solo la primera vez que se abre la página)
+# Estado inicial
 # ---------------------------------------------------------------------------
+# La primera vez crea todo; después solo completa lo que falte (por ejemplo,
+# en una sesión que venía de una versión vieja de la app).
 
-if "color" not in st.session_state:
-    st.session_state.color = "Blancas"
-# ("revision" es de las claves nuevas: si falta, la sesión venía de una
-# versión vieja de la app y arrancamos de cero.)
-if "tablero" not in st.session_state or "revision" not in st.session_state:
-    nueva_partida()
-if "ultimo_id_tablero" not in st.session_state:
-    st.session_state.ultimo_id_tablero = None  # id de la última jugada del componente
-
+inicializar_estado()
 tablero = st.session_state.tablero
 
 
@@ -377,6 +459,10 @@ with st.sidebar:
     # Para quien prefiere jugar sin "ayudas".
     st.toggle("Mostrar barra de evaluación", value=True, key="mostrar_barra")
     st.button("Nueva partida", on_click=nueva_partida, width="stretch")
+
+# Recién acá (después de dibujar el selector) el valor de "control" es seguro:
+# si los tiempos no coinciden con el reloj elegido, se reinician.
+asegurar_reloj()
 
 
 # ---------------------------------------------------------------------------
@@ -537,7 +623,8 @@ if not partida_terminada(tablero) and tablero.turn != color_humano():
                                      devolver_valor=True)
         pensado = time.perf_counter() - inicio
 
-    if hay_reloj():
+    # Igual que vos: la primera jugada del bot no gasta tiempo.
+    if hay_reloj() and ya_jugo(tablero, bot):
         _, incremento = control_de_tiempo()
         st.session_state.tiempos[bot] -= pensado
         if st.session_state.tiempos[bot] <= 0:

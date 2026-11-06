@@ -197,53 +197,157 @@ def test_sin_reloj_por_defecto():
     assert argumentos(at)["reloj"] is None
 
 
-def test_reloj_descuenta_el_tiempo_y_suma_el_incremento():
+def abrir_con_reloj(control="3+2"):
+    """App con reloj y ya jugada la primera jugada de cada uno (1. e4 y la
+    respuesta del bot), así los dos relojes ya están corriendo."""
+    at = abrir_app()
+    at.selectbox(key="control").set_value(control).run()
+    mandar_desde_tablero(at, "e2e4", id_jugada="primera", tiempo_usado=1)
+    return at
+
+
+def una_jugada_legal(at):
+    return next(iter(at.session_state.tablero.legal_moves)).uci()
+
+
+def test_los_relojes_arrancan_despues_de_la_primera_jugada():
+    # Como en Lichess: la primera jugada de cada uno no gasta tiempo.
     at = abrir_app()
     at.selectbox(key="control").set_value("3+2").run()
-    assert argumentos(at)["reloj"] == {"w": 180.0, "b": 180.0, "corre": "w"}
-    # Pensé 10 segundos (lo mide el navegador): 180 - 10 + 2 = 172.
+    assert argumentos(at)["reloj"] == {"w": 180.0, "b": 180.0, "corre": None}
+    # Mi primera jugada: aunque haya pensado 10 s, no se descuenta (ni hay incremento).
     mandar_desde_tablero(at, "e2e4", tiempo_usado=10)
+    # La primera del bot tampoco. Ahora me toca y mi reloj sí corre.
+    assert argumentos(at)["reloj"] == {"w": 180.0, "b": 180.0, "corre": "w"}
+
+
+def test_reloj_descuenta_el_tiempo_y_suma_el_incremento():
+    at = abrir_con_reloj("3+2")
+    # Segunda jugada: pensé 10 segundos (lo mide el navegador): 180 - 10 + 2 = 172.
+    mandar_desde_tablero(at, una_jugada_legal(at), id_jugada="segunda", tiempo_usado=10)
     reloj = argumentos(at)["reloj"]
     assert reloj["w"] == 172.0
     assert 180.0 < reloj["b"] <= 182.0   # el bot pensó un poquito y sumó sus 2 s
     assert reloj["corre"] == "w"         # MiniMate ya jugó: me toca
 
 
-def test_con_reloj_no_se_puede_deshacer():
+def test_jugando_con_negras_el_reloj_del_bot_arranca_despues_de_su_primera():
     at = abrir_app()
-    at.selectbox(key="control").set_value("5+3").run()
-    mandar_desde_tablero(at, "e2e4", tiempo_usado=1)
+    at.selectbox(key="control").set_value("3+2").run()
+    at.sidebar.radio[0].set_value("Negras").run()
+    assert len(jugadas(at)) == 1                      # MiniMate abrió, gratis
+    assert argumentos(at)["reloj"] == {"w": 180.0, "b": 180.0, "corre": None}
+
+
+def test_con_reloj_no_se_puede_deshacer():
+    at = abrir_con_reloj("5+3")
     assert at.button(key="deshacer").disabled
 
 
 def test_se_me_acaba_el_tiempo():
-    at = abrir_app()
-    at.selectbox(key="control").set_value("3+2").run()
+    at = abrir_con_reloj("3+2")
     mandar_desde_tablero(at, None, id_jugada="t", tiempo_agotado=True)
     assert at.session_state.perdio_por_tiempo == chess.WHITE
     assert "acabó el tiempo" in at.error[0].value
     assert argumentos(at)["reloj"]["corre"] is None   # ya no corre ningún reloj
     assert argumentos(at)["mi_turno"] is False
     # Una jugada que llega tarde no se juega.
-    mandar_desde_tablero(at, "e2e4", id_jugada="u", tiempo_usado=1)
-    assert jugadas(at) == []
+    antes = len(jugadas(at))
+    mandar_desde_tablero(at, una_jugada_legal(at), id_jugada="u", tiempo_usado=1)
+    assert len(jugadas(at)) == antes
+
+
+def test_antes_de_la_primera_jugada_no_se_pierde_por_tiempo():
+    at = abrir_app()
+    at.selectbox(key="control").set_value("3+2").run()
+    mandar_desde_tablero(at, None, id_jugada="t", tiempo_agotado=True)
+    assert at.session_state.perdio_por_tiempo is None
 
 
 def test_jugada_que_llega_sin_tiempo_pierde():
-    at = abrir_app()
-    at.selectbox(key="control").set_value("3+2").run()
-    mandar_desde_tablero(at, "e2e4", tiempo_usado=200)   # más de los 180 que tenía
+    at = abrir_con_reloj("3+2")
+    antes = len(jugadas(at))
+    # Más de los 180 que tenía.
+    mandar_desde_tablero(at, una_jugada_legal(at), id_jugada="tarde", tiempo_usado=200)
     assert at.session_state.perdio_por_tiempo == chess.WHITE
-    assert jugadas(at) == []
+    assert len(jugadas(at)) == antes
 
 
 def test_al_bot_se_le_acaba_el_tiempo():
-    at = abrir_app()
-    at.selectbox(key="control").set_value("3+2").run()
+    at = abrir_con_reloj("3+2")
     at.session_state.tiempos = {chess.WHITE: 100.0, chess.BLACK: 0.0001}
-    mandar_desde_tablero(at, "e2e4", tiempo_usado=1)
+    mandar_desde_tablero(at, una_jugada_legal(at), id_jugada="segunda", tiempo_usado=1)
     assert at.session_state.perdio_por_tiempo == chess.BLACK
     assert "Ganaste" in at.success[0].value
+
+
+# --- Sesiones viejas y estado roto ------------------------------------------
+
+def sesion_vieja():
+    """Simula una sesión abierta con la versión anterior de la app (antes del
+    reloj y la revisión): tiene tablero con jugadas, pero no las claves nuevas."""
+    at = AppTest.from_file(RUTA_APP, default_timeout=60)
+    tablero = chess.Board()
+    for san in ["e4", "e5", "Nf3", "Nc6"]:
+        tablero.push_san(san)
+    at.session_state.color = "Blancas"
+    at.session_state.tablero = tablero
+    at.session_state.mensaje = ""
+    at.session_state.ultimo_id_tablero = None
+    return at
+
+
+def test_sesion_vieja_y_despues_elegir_3_mas_2():
+    at = sesion_vieja().run()
+    assert not at.exception
+    assert len(jugadas(at)) == 4               # la partida que venía no se pierde
+    at.select_slider(key="nivel").set_value("Principiante").run()
+    at.selectbox(key="control").set_value("3+2").run()
+    assert not at.exception
+    assert at.session_state.tiempos == {chess.WHITE: 180.0, chess.BLACK: 180.0}
+    assert argumentos(at)["reloj"]["w"] == 180.0
+
+
+def test_sesion_vieja_a_medias_no_se_rompe():
+    # Tiene "revision" (de una versión intermedia) pero no las claves del reloj.
+    at = sesion_vieja()
+    at.session_state.revision = None
+    at.session_state.revisar_pedido = False
+    at.run()
+    assert not at.exception
+    assert at.session_state.perdio_por_tiempo is None
+
+
+def test_tiempos_vacios_con_reloj_elegido_se_reinician():
+    # Lo que pasaba en Streamlit Cloud: reloj en 3+2 pero tiempos = None.
+    at = abrir_app()
+    at.selectbox(key="control").set_value("3+2").run()
+    at.session_state.tiempos = None
+    at.run()
+    assert not at.exception
+    assert argumentos(at)["reloj"]["w"] == 180.0
+
+
+def test_tiempos_rotos_o_de_otro_reloj_se_reinician():
+    at = abrir_app()
+    at.selectbox(key="control").set_value("3+2").run()
+    at.session_state.tiempos = {chess.WHITE: "basura"}
+    at.run()
+    assert at.session_state.tiempos == {chess.WHITE: 180.0, chess.BLACK: 180.0}
+    # Tiempos que eran de un 10+5 con el selector en 3+2: se reinician a 3+2.
+    at.session_state.tiempos = {chess.WHITE: 600.0, chess.BLACK: 600.0}
+    at.session_state.reloj_de_los_tiempos = "10+5"
+    at.run()
+    assert at.session_state.tiempos == {chess.WHITE: 180.0, chess.BLACK: 180.0}
+
+
+def test_jugada_con_tiempos_vacios_no_rompe():
+    # Si el callback de la jugada encuentra los tiempos vacíos, también los arregla.
+    at = abrir_con_reloj("3+2")
+    at.session_state.tiempos = None
+    mandar_desde_tablero(at, una_jugada_legal(at), id_jugada="x", tiempo_usado=5)
+    assert not at.exception
+    assert argumentos(at)["reloj"]["w"] == 177.0   # 180 - 5 + 2
 
 
 # --- Revisión de partida ---------------------------------------------------

@@ -19,7 +19,8 @@ import time
 import chess
 import streamlit as st
 
-from src.analisis import SIMBOLOS, datos_barra, resumen, revisar_partida
+from src.analisis import (SIMBOLOS, datos_barra, evaluaciones_de_la_revision, resumen,
+                          revisar_partida, texto_contador)
 from src.componente_tablero import procesar_valor, tablero_interactivo
 from src.evaluacion import VALOR_MATE
 from src.motor import mejor_jugada
@@ -91,6 +92,7 @@ def valores_iniciales():
         "perdio_por_tiempo": None,     # color que se quedó sin tiempo
         # Revisión de partida.
         "revision": None,              # lista de análisis (None = no estás revisando)
+        "evaluaciones_revision": {},   # {cantidad de jugadas: valor} de cada posición
         "revisar_pedido": False,       # apretaste "Revisar partida"
         "indice_revision": 0,          # cuántas jugadas se ven en el tablero
     }
@@ -297,6 +299,7 @@ def deshacer():
     for cantidad in [c for c in st.session_state.evaluaciones if c > len(tablero.move_stack)]:
         del st.session_state.evaluaciones[cantidad]
     st.session_state.revision = None
+    st.session_state.evaluaciones_revision = {}
     st.session_state.revisar_pedido = False
     st.session_state.mensaje = ""
 
@@ -369,6 +372,13 @@ def valor_de_la_posicion(tablero_mostrado):
 def datos_barra_para(tablero_mostrado):
     if not st.session_state.get("mostrar_barra", True):
         return None
+    if en_revision():
+        # En la revisión, cada posición tiene su propia evaluación (calculada
+        # al revisar): la de la posición que estás viendo, no la del final.
+        cantidad = len(tablero_mostrado.move_stack)
+        valor = st.session_state.evaluaciones_revision.get(cantidad)
+        if valor is not None:
+            return datos_barra(valor)
     return datos_barra(valor_de_la_posicion(tablero_mostrado))
 
 
@@ -539,11 +549,14 @@ with columna_panel:
         def al_avanzar(hechas, total):
             progreso.progress(hechas / total, text=f"Analizando tus jugadas... {hechas}/{total}")
 
-        revision = revisar_partida(list(tablero.move_stack), color_humano(),
+        jugadas_partida = list(tablero.move_stack)
+        revision = revisar_partida(jugadas_partida, color_humano(),
                                    inicial=tablero.root(), al_avanzar=al_avanzar)
-        # La evaluación después de cada jugada tuya también sirve para la barra.
-        for analisis in revision:
-            st.session_state.evaluaciones[analisis["indice"] + 1] = analisis["valor"]
+        # Evaluación de CADA posición (para la barra de la revisión), toda del
+        # mismo análisis. Casi todas salen de la revisión; faltan una o dos.
+        progreso.progress(1.0, text="Evaluando las posiciones...")
+        st.session_state.evaluaciones_revision = evaluaciones_de_la_revision(
+            revision, jugadas_partida, inicial=tablero.root())
         st.session_state.revision = revision
         st.session_state.indice_revision = len(tablero.move_stack)  # empieza en el final
         st.rerun()
@@ -566,7 +579,10 @@ with columna_panel:
         izquierda, centro, derecha = st.columns([1, 2, 1])
         izquierda.button("◀", key="rev_anterior", on_click=ir_a_jugada, args=(indice - 1,),
                          disabled=indice == 0, width="stretch")
-        centro.caption(f"Jugada {indice} de {total}")
+        # En número de jugada de ajedrez (no medias jugadas): "13. blancas · 13 de 15".
+        # st.caption interpreta Markdown y "13. blancas" sería una lista
+        # numerada: con "\." el punto se muestra tal cual.
+        centro.caption(texto_contador(tablero.root(), indice, total).replace(".", "\\.", 1))
         derecha.button("▶", key="rev_siguiente", on_click=ir_a_jugada, args=(indice + 1,),
                        disabled=indice == total, width="stretch")
 
@@ -575,7 +591,8 @@ with columna_panel:
         if analisis is not None:
             tipos = {"error grave": st.error, "error": st.warning,
                      "imprecisión": st.warning, None: st.success}
-            tipos[analisis["clasificacion"]](texto_jugada(analisis))
+            # (Mismo escape que en el contador: si no, "12. Qf3" sería una lista.)
+            tipos[analisis["clasificacion"]](texto_jugada(analisis).replace(".", "\\.", 1))
 
         # Lista de tus jugadas: tocando una, el tablero va a esa posición.
         for analisis in revision:

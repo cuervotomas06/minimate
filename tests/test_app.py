@@ -384,6 +384,38 @@ def test_revision_de_la_partida():
     assert args["flecha"] is None          # la última jugada fue del bot
 
 
+def test_barra_de_la_revision_sigue_a_la_posicion():
+    at = abrir_revision_del_mate_del_loco()
+    vistas = {}
+    for indice in range(5):
+        at.session_state.indice_revision = indice
+        at.run()
+        vistas[indice] = argumentos(at)["barra"]["texto"]
+    # Cada posición muestra la suya, no la del final.
+    assert vistas[4] == "0-1"          # final: mate
+    assert vistas[3] == "-M1"          # después de g4??: negras dan mate en 1
+    assert vistas[0] != "0-1" and vistas[2] != "0-1"
+    # Y son las que calculó la revisión, una por posición.
+    from src.analisis import formatear_evaluacion
+    for indice, texto in vistas.items():
+        assert texto == formatear_evaluacion(at.session_state.evaluaciones_revision[indice])
+
+
+def test_barra_de_la_revision_con_negras_y_partida_por_tiempo():
+    # Partida jugada de verdad contra el bot, con negras, terminada por tiempo:
+    # la inicial y la final no tienen jugada tuya y antes "tomaban prestado"
+    # el valor de otra posición.
+    at = abrir_app()
+    at.sidebar.radio[0].set_value("Negras").run()
+    at.text_input(key="texto_jugada").input(
+        next(iter(at.session_state.tablero.legal_moves)).uci()).run()
+    at.session_state.perdio_por_tiempo = chess.BLACK
+    at.run()
+    at.button(key="revisar").click().run()
+    total = len(jugadas(at))
+    assert sorted(at.session_state.evaluaciones_revision) == list(range(total + 1))
+
+
 def test_navegar_la_revision():
     at = abrir_revision_del_mate_del_loco()
     # Tocar g4 en la lista: el tablero muestra la posición después de g4,
@@ -403,6 +435,9 @@ def test_navegar_la_revision():
     # ▶ avanza.
     at.button(key="rev_siguiente").click().run()
     assert at.session_state.indice_revision == 3
+    # El contador va en jugadas de ajedrez: g4 es la jugada 2 de blancas.
+    # (En el caption el punto va escapado para que Markdown no lo tome como lista.)
+    assert "2\\. blancas · 2 de 2" in [c.value for c in at.caption]
     # Nueva partida sale de la revisión.
     at.sidebar.button[0].click().run()
     assert at.session_state.revision is None

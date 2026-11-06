@@ -118,6 +118,7 @@ def revisar_partida(jugadas, color, inicial=None, profundidad=PROFUNDIDAD_REVISI
       san           tu jugada, ej: 'Qf3'
       mejor_san     la mejor según MiniMate, ej: 'Bg4'
       mejor_uci     la misma en UCI, para dibujar la flecha
+      valor_antes   evaluación de la posición ANTES de tu jugada (con la mejor)
       valor         evaluación después de tu jugada (desde blancas)
       perdida       centipeones que perdiste
       clasificacion 'imprecisión' / 'error' / 'error grave' / None
@@ -146,6 +147,7 @@ def revisar_partida(jugadas, color, inicial=None, profundidad=PROFUNDIDAD_REVISI
                 "san": tablero.san(jugada),
                 "mejor_san": tablero.san(mejor),
                 "mejor_uci": mejor.uci(),
+                "valor_antes": alejar_mate(valor_mejor),
                 "valor": valor_mia,
                 "perdida": perdida,
                 "clasificacion": clasificar(perdida),
@@ -155,6 +157,82 @@ def revisar_partida(jugadas, color, inicial=None, profundidad=PROFUNDIDAD_REVISI
         tablero.push(jugada)
 
     return resultado
+
+
+def alejar_mate(valor):
+    """Pasa un valor "después de la mejor jugada" a "antes de jugarla".
+    El material es el mismo, pero un mate queda una media jugada más lejos:
+    si con la mejor jugada ya es mate (100000), ANTES de jugarla es mate
+    en 1 (99999), no "1-0"."""
+    if not es_valor_de_mate(valor):
+        return valor
+    return valor - 1 if valor > 0 else valor + 1
+
+
+def valor_posicion(tablero, profundidad=PROFUNDIDAD_REVISION):
+    """Evaluación de una posición (desde blancas), buscando la mejor jugada
+    del que mueve. Si la partida ya terminó: mate o tablas (0)."""
+    if tablero.is_checkmate():
+        # Ganó el que acaba de mover (el que NO le toca).
+        return VALOR_MATE if tablero.turn == chess.BLACK else -VALOR_MATE
+    if tablero.is_game_over():
+        return 0
+    _, valor = mejor_jugada(tablero, profundidad, con_quietud=True, devolver_valor=True)
+    return alejar_mate(valor)
+
+
+def evaluaciones_de_la_revision(revision, jugadas, inicial=None,
+                                profundidad=PROFUNDIDAD_REVISION):
+    """Evaluación de CADA posición de la partida, para la barra de la revisión:
+    {cantidad de jugadas hechas: valor}, de 0 (posición inicial) al final.
+
+    Casi todas salen gratis de la revisión: la posición antes de cada jugada
+    tuya (valor_antes) y la de después (valor). Las que faltan (la inicial si
+    jugás con negras, la final si la última jugada fue del bot) se calculan acá.
+    Así todas salen del mismo análisis y ninguna "toma prestado" el valor de
+    otra posición."""
+    valores = {}
+    for analisis in revision:
+        valores[analisis["indice"]] = analisis["valor_antes"]
+        valores[analisis["indice"] + 1] = analisis["valor"]
+
+    tablero = chess.Board() if inicial is None else inicial.copy()
+    for cantidad in range(len(jugadas) + 1):
+        if cantidad not in valores:
+            valores[cantidad] = valor_posicion(tablero, profundidad)
+        if cantidad < len(jugadas):
+            tablero.push(jugadas[cantidad])
+    return valores
+
+
+# ---------------------------------------------------------------------------
+# Contador de jugadas de la revisión
+# ---------------------------------------------------------------------------
+# Las listas de jugadas cuentan "medias jugadas" (una de blancas O una de
+# negras), pero en ajedrez una jugada son las dos: 13. e4 e5 es la jugada 13.
+
+def numero_y_color(inicial, indice):
+    """Número de jugada de ajedrez y color de la media jugada 'indice'
+    (0 = la primera de la partida). Ej: (13, chess.WHITE)."""
+    # Si empezaron negras, la media jugada 0 ya es "la segunda mitad".
+    corrimiento = 0 if inicial.turn == chess.WHITE else 1
+    numero = inicial.fullmove_number + (indice + corrimiento) // 2
+    color = chess.WHITE if (indice + corrimiento) % 2 == 0 else chess.BLACK
+    return numero, color
+
+
+def texto_contador(inicial, mostradas, total_medias):
+    """Texto para la navegación: '13. blancas · 13 de 15'.
+    mostradas: cuántas medias jugadas se ven en el tablero (0 = inicio).
+    total_medias: cuántas medias jugadas tiene la partida."""
+    if total_medias == 0:
+        return "Posición inicial"
+    ultima, _ = numero_y_color(inicial, total_medias - 1)  # número de la última jugada
+    if mostradas == 0:
+        return f"Posición inicial · 0 de {ultima}"
+    numero, color = numero_y_color(inicial, mostradas - 1)
+    nombre = "blancas" if color == chess.WHITE else "negras"
+    return f"{numero}. {nombre} · {numero} de {ultima}"
 
 
 def resumen(revision):

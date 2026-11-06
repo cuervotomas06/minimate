@@ -3,9 +3,10 @@
 
 import chess
 
-from src.analisis import (clasificar, datos_barra, formatear_evaluacion,
-                          perdida_de_la_jugada, porcentaje_barra, resumen,
-                          revisar_partida)
+from src.analisis import (alejar_mate, clasificar, datos_barra,
+                          evaluaciones_de_la_revision, formatear_evaluacion,
+                          numero_y_color, perdida_de_la_jugada, porcentaje_barra,
+                          resumen, revisar_partida, texto_contador, valor_posicion)
 from src.evaluacion import VALOR_MATE
 from src.motor import mejor_jugada
 
@@ -122,3 +123,63 @@ def test_la_mejor_jugada_no_pierde_nada():
     assert revision[0]["perdida"] == 0
     assert revision[0]["clasificacion"] is None
     assert revision[0]["san"] == revision[0]["mejor_san"]
+
+
+# --- Evaluación de cada posición (barra de la revisión) ----------------------
+
+def test_alejar_mate():
+    assert alejar_mate(150) == 150                       # material: igual
+    assert alejar_mate(VALOR_MATE) == VALOR_MATE - 1     # "1-0" pasa a ser M1
+    assert alejar_mate(-(VALOR_MATE - 2)) == -(VALOR_MATE - 3)
+    assert formatear_evaluacion(alejar_mate(VALOR_MATE)) == "M1"
+
+
+def test_valor_posicion():
+    assert valor_posicion(tablero_con("f3 e5 g4 Qh4#")) == -VALOR_MATE   # ya es mate
+    # Antes de Qh4# negras tienen mate en 1.
+    assert formatear_evaluacion(valor_posicion(tablero_con("f3 e5 g4"))) == "-M1"
+    # Ahogado: tablas.
+    assert valor_posicion(chess.Board("7k/5Q2/6K1/8/8/8/8/8 b - - 0 1")) == 0
+
+
+def test_cada_posicion_tiene_su_evaluacion():
+    tablero = tablero_con("f3 e5 g4 Qh4#")
+    jugadas = list(tablero.move_stack)
+    revision = revisar_partida(jugadas, chess.WHITE)
+    valores = evaluaciones_de_la_revision(revision, jugadas)
+    assert sorted(valores) == [0, 1, 2, 3, 4]            # todas, de la inicial a la final
+    assert formatear_evaluacion(valores[3]) == "-M1"     # después de g4??
+    assert formatear_evaluacion(valores[4]) == "0-1"     # mate
+    assert valores[3] == revision[1]["valor"]            # sale de la revisión, sin buscar
+
+
+def test_evaluaciones_jugando_con_negras():
+    # Con negras la posición inicial no tiene jugada tuya: se calcula aparte.
+    tablero = tablero_con("e4 e5 Qh5 Qg5 Qxg5")
+    jugadas = list(tablero.move_stack)
+    revision = revisar_partida(jugadas, chess.BLACK)
+    valores = evaluaciones_de_la_revision(revision, jugadas)
+    assert sorted(valores) == [0, 1, 2, 3, 4, 5]
+    assert valores[5] > 500        # después de Qxg5 blancas tienen una dama de más
+
+
+# --- Contador de jugadas ------------------------------------------------------
+
+def test_contador_en_jugadas_de_ajedrez():
+    inicial = chess.Board()
+    # 30 medias jugadas = 15 jugadas de ajedrez.
+    assert texto_contador(inicial, 25, 30) == "13. blancas · 13 de 15"
+    assert texto_contador(inicial, 26, 30) == "13. negras · 13 de 15"
+    assert texto_contador(inicial, 1, 30) == "1. blancas · 1 de 15"
+    assert texto_contador(inicial, 0, 30) == "Posición inicial · 0 de 15"
+    assert texto_contador(inicial, 0, 0) == "Posición inicial"
+    # Si la partida termina con una jugada de blancas, esa jugada ya cuenta: 16.
+    assert texto_contador(inicial, 31, 31) == "16. blancas · 16 de 16"
+
+
+def test_contador_desde_un_fen_con_negras():
+    # Empieza en la jugada 40 y mueven negras.
+    inicial = chess.Board("4k3/8/8/8/8/8/8/4K3 b - - 0 40")
+    assert numero_y_color(inicial, 0) == (40, chess.BLACK)
+    assert numero_y_color(inicial, 1) == (41, chess.WHITE)
+    assert texto_contador(inicial, 2, 3) == "41. blancas · 41 de 41"

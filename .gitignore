@@ -16,3 +16,6 @@ motores/
 
 # Partidas generadas por medir_elo.py / medir_niveles.py
 *.pgn
+
+# Partidas guardadas, importadas y caché de evaluaciones (datos personales)
+datos/

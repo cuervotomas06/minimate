@@ -11,8 +11,9 @@ import json
 import chess
 from streamlit.testing.v1 import AppTest
 
-# La ruta es relativa a ESTE archivo (tests/), por eso "../app.py".
-RUTA_APP = "../app.py"
+# La ruta es relativa a ESTE archivo (tests/). Probamos la página Jugar
+# directamente (app.py solo arma el menú de páginas).
+RUTA_APP = "../paginas/jugar.py"
 
 
 def abrir_app(fen=None):
@@ -304,6 +305,10 @@ def test_sesion_vieja_y_despues_elegir_3_mas_2():
     at.select_slider(key="nivel").set_value("Principiante").run()
     at.selectbox(key="control").set_value("3+2").run()
     assert not at.exception
+    # Ya había jugadas: cambiar el reloj pide confirmación.
+    assert at.session_state.cambio_pendiente == {"tipo": "reloj", "valor": "3+2"}
+    at.button(key="confirmar_cambio").click().run()
+    assert not at.exception
     assert at.session_state.tiempos == {chess.WHITE: 180.0, chess.BLACK: 180.0}
     assert argumentos(at)["reloj"]["w"] == 180.0
 
@@ -442,3 +447,202 @@ def test_navegar_la_revision():
     at.sidebar.button[0].click().run()
     assert at.session_state.revision is None
     assert argumentos(at)["fen"] == chess.STARTING_FEN
+
+
+# --- Guardado de partidas ------------------------------------------------------
+
+def leer_guardadas(carpeta):
+    import io
+
+    import chess.pgn
+    ruta = carpeta / "partidas.pgn"
+    if not ruta.exists():
+        return []
+    lector = io.StringIO(ruta.read_text(encoding="utf-8"))
+    juegos = []
+    while (juego := chess.pgn.read_game(lector)) is not None:
+        juegos.append(juego)
+    return juegos
+
+
+def test_abandonar_guarda_la_partida(carpeta_de_datos_temporal):
+    at = abrir_app()
+    at.text_input(key="texto_jugada").input("e4").run()
+    at.button(key="abandonar").click().run()
+    assert at.session_state.abandono
+    assert "Abandonaste" in at.error[0].value
+    juegos = leer_guardadas(carpeta_de_datos_temporal)
+    assert len(juegos) == 1
+    encabezados = juegos[0].headers
+    assert encabezados["Result"] == "0-1"
+    assert encabezados["Terminacion"] == "abandono"
+    assert encabezados["Termination"] == "Abandoned"
+    assert encabezados["Nivel"] == "Principiante"
+    assert encabezados["MiColor"] == "blancas"
+    # Cada jugada con su evaluación.
+    assert all(nodo.eval() is not None for nodo in juegos[0].mainline())
+    # Botón para descargarla (en Streamlit Cloud el archivo se borra).
+    assert at.get("download_button")
+    # Y ya no se puede deshacer ni abandonar de nuevo.
+    assert at.button(key="deshacer").disabled
+    assert not [b for b in at.button if b.key == "abandonar"]
+
+
+def test_abandonar_sin_jugar_no_se_puede():
+    at = abrir_app()
+    assert at.button(key="abandonar").disabled
+
+
+def test_se_guarda_una_sola_vez(carpeta_de_datos_temporal):
+    at = abrir_app()
+    at.text_input(key="texto_jugada").input("e4").run()
+    at.button(key="abandonar").click().run()
+    at.run()
+    at.run()
+    assert len(leer_guardadas(carpeta_de_datos_temporal)) == 1
+
+
+def test_mate_se_guarda_y_la_revision_reusa_el_analisis(carpeta_de_datos_temporal, monkeypatch):
+    at = abrir_app()
+    tablero = chess.Board()
+    for san in "f3 e5 g4 Qh4#".split():
+        tablero.push_san(san)
+    at.session_state.tablero = tablero
+    at.run()
+    juegos = leer_guardadas(carpeta_de_datos_temporal)
+    assert len(juegos) == 1 and juegos[0].headers["Terminacion"] == "jaque mate"
+    analisis = at.session_state.analisis_partida
+    assert analisis is not None
+    # La revisión usa el mismo análisis (no vuelve a analizar).
+    at.button(key="revisar").click().run()
+    assert at.session_state.revision is analisis["revision"] or \
+        at.session_state.revision == analisis["revision"]
+    assert at.session_state.evaluaciones_revision == analisis["evaluaciones"]
+
+
+def test_partida_con_reloj_guarda_clk(carpeta_de_datos_temporal):
+    at = abrir_con_reloj("3+2")       # 1. e4 y la respuesta del bot
+    mandar_desde_tablero(at, una_jugada_legal(at), id_jugada="segunda", tiempo_usado=10)
+    at.button(key="abandonar").click().run()
+    juego = leer_guardadas(carpeta_de_datos_temporal)[0]
+    relojes = [nodo.clock() for nodo in juego.mainline()]
+    assert relojes[:2] == [180, 180]          # la primera de cada uno no gasta tiempo
+    assert relojes[2] == 172                  # 180 - 10 + 2
+    assert juego.headers["TimeControl"] == "180+2"
+    assert juego.headers["Reloj"] == "3+2"
+
+
+def test_perder_por_tiempo_se_guarda(carpeta_de_datos_temporal):
+    at = abrir_con_reloj("3+2")
+    mandar_desde_tablero(at, None, id_jugada="t", tiempo_agotado=True)
+    juego = leer_guardadas(carpeta_de_datos_temporal)[0]
+    assert juego.headers["Terminacion"] == "tiempo"
+    assert juego.headers["Result"] == "0-1"
+
+
+# --- Empezar otra partida en medio de una -----------------------------------
+
+def con_una_jugada():
+    """App con 1. e4 y la respuesta del bot: ya hiciste una jugada."""
+    at = abrir_app()
+    at.text_input(key="texto_jugada").input("e4").run()
+    assert len(jugadas(at)) == 2
+    return at
+
+
+def test_nueva_partida_sin_jugadas_no_pregunta():
+    at = abrir_app()
+    at.button(key="nueva_partida").click().run()
+    assert at.session_state.cambio_pendiente is None
+    assert not at.warning
+
+
+def test_nueva_partida_pide_confirmacion(carpeta_de_datos_temporal):
+    at = con_una_jugada()
+    at.button(key="nueva_partida").click().run()
+    assert at.session_state.cambio_pendiente == {"tipo": "nueva"}
+    assert "abandonada" in at.sidebar.warning[0].value
+    assert len(jugadas(at)) == 2                      # la partida sigue
+    assert leer_guardadas(carpeta_de_datos_temporal) == []
+
+
+def test_cancelar_sigue_la_partida(carpeta_de_datos_temporal):
+    at = con_una_jugada()
+    at.button(key="nueva_partida").click().run()
+    at.button(key="cancelar_cambio").click().run()
+    assert at.session_state.cambio_pendiente is None
+    assert len(jugadas(at)) == 2
+    assert not at.session_state.abandono
+    assert leer_guardadas(carpeta_de_datos_temporal) == []
+    assert not at.sidebar.warning
+
+
+def test_confirmar_guarda_como_abandono(carpeta_de_datos_temporal):
+    at = con_una_jugada()
+    at.button(key="nueva_partida").click().run()
+    at.button(key="confirmar_cambio").click().run()
+    assert not at.exception
+    juegos = leer_guardadas(carpeta_de_datos_temporal)
+    assert len(juegos) == 1
+    assert juegos[0].headers["Terminacion"] == "abandono"
+    assert juegos[0].headers["Result"] == "0-1"           # perdida por mí (blancas)
+    assert jugadas(at) == []                               # partida nueva
+    assert not at.session_state.abandono
+    assert at.session_state.cambio_pendiente is None
+
+
+def test_cambiar_de_color_en_medio_pide_confirmacion(carpeta_de_datos_temporal):
+    at = con_una_jugada()
+    at.sidebar.radio[0].set_value("Negras").run()
+    # El selector vuelve a "Blancas" hasta que confirmes; la partida sigue igual.
+    assert at.sidebar.radio[0].value == "Blancas"
+    assert at.session_state.cambio_pendiente == {"tipo": "color", "valor": "Negras"}
+    assert argumentos(at)["color"] == "white"
+    assert len(jugadas(at)) == 2
+    at.button(key="confirmar_cambio").click().run()
+    assert not at.exception
+    # Se guardó la vieja (con blancas) y empezó una con negras: el bot ya abrió.
+    juegos = leer_guardadas(carpeta_de_datos_temporal)
+    assert len(juegos) == 1 and juegos[0].headers["MiColor"] == "blancas"
+    assert at.sidebar.radio[0].value == "Negras"
+    assert argumentos(at)["color"] == "black"
+    assert len(jugadas(at)) == 1
+
+
+def test_cambiar_el_reloj_en_medio_pide_confirmacion(carpeta_de_datos_temporal):
+    at = con_una_jugada()
+    at.selectbox(key="control").set_value("5+3").run()
+    assert at.selectbox(key="control").value == "Sin reloj"
+    assert argumentos(at)["reloj"] is None
+    at.button(key="confirmar_cambio").click().run()
+    assert not at.exception
+    assert leer_guardadas(carpeta_de_datos_temporal)[0].headers["Reloj"] == "Sin reloj"
+    assert at.selectbox(key="control").value == "5+3"
+    assert at.session_state.tiempos == {chess.WHITE: 300.0, chess.BLACK: 300.0}
+    assert jugadas(at) == []
+
+
+def test_cambiar_el_reloj_cancelado_no_cambia_nada():
+    at = con_una_jugada()
+    at.selectbox(key="control").set_value("5+3").run()
+    at.button(key="cancelar_cambio").click().run()
+    assert at.selectbox(key="control").value == "Sin reloj"
+    assert at.session_state.tiempos is None
+    assert len(jugadas(at)) == 2
+
+
+def test_partida_terminada_no_pregunta(carpeta_de_datos_temporal):
+    at = con_una_jugada()
+    at.button(key="abandonar").click().run()      # ya quedó guardada
+    at.button(key="nueva_partida").click().run()
+    assert at.session_state.cambio_pendiente is None
+    assert jugadas(at) == []
+    assert len(leer_guardadas(carpeta_de_datos_temporal)) == 1   # no se guarda dos veces
+
+
+# --- Menú de páginas (app.py) ------------------------------------------------
+
+def test_app_abre_la_pagina_jugar():
+    at = AppTest.from_file("../app.py", default_timeout=60).run()
+    assert not at.exception
+    assert at.title[0].value == "♟ MiniMate"

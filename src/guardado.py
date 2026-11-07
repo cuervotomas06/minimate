@@ -1,0 +1,179 @@
+# Guardado de partidas: arma el PGN de una partida jugada en la app y lo guarda.
+#
+# PGN ("Portable Game Notation") es el formato de texto estándar del ajedrez:
+# unos encabezados entre corchetes y después las jugadas. Lichess y Chess.com
+# agregan comentarios con el reloj y la evaluación después de cada jugada:
+#     1. e4 { [%eval 0.3] [%clk 0:02:58] } e5 { [%eval 0.25] [%clk 0:03:00] }
+# Usamos ese mismo formato, así cualquier programa de ajedrez puede leerlo.
+#
+# El resto de la app solo usa armar_pgn() y guardar_partida(). Para pasar más
+# adelante a una base de datos alcanza con cambiar guardar_partida().
+
+import os
+from datetime import datetime
+from pathlib import Path
+
+import chess
+import chess.engine
+import chess.pgn
+
+from src.analisis import jugadas_hasta_mate
+from src.evaluacion import VALOR_MATE
+from src.motor import es_valor_de_mate
+from src.reloj import CONTROLES
+
+# Carpeta donde se guardan los datos (datos/ en la raíz del proyecto).
+# Se puede cambiar con la variable de entorno MINIMATE_DATOS (los tests la
+# usan para no escribir en la carpeta de verdad).
+CARPETA_POR_DEFECTO = Path(__file__).resolve().parent.parent / "datos"
+ARCHIVO_PARTIDAS = "partidas.pgn"
+
+
+def carpeta_datos():
+    return Path(os.environ.get("MINIMATE_DATOS", CARPETA_POR_DEFECTO))
+
+
+# ---------------------------------------------------------------------------
+# Resultado y forma de terminar
+# ---------------------------------------------------------------------------
+
+# Cómo terminó, en castellano (para el encabezado "Terminacion").
+MOTIVOS = {
+    chess.Termination.CHECKMATE: "jaque mate",
+    chess.Termination.STALEMATE: "ahogado",
+    chess.Termination.INSUFFICIENT_MATERIAL: "material insuficiente",
+    chess.Termination.SEVENTYFIVE_MOVES: "regla de las 75 jugadas",
+    chess.Termination.FIVEFOLD_REPETITION: "quíntuple repetición",
+}
+
+
+def resultado_y_terminacion(tablero, color_humano, perdio_por_tiempo=None, abandono=False):
+    """Devuelve (resultado, termination, terminacion):
+    - resultado: '1-0', '0-1' o '1/2-1/2' (como en el PGN).
+    - termination: la forma de Lichess ('Normal', 'Time forfeit', 'Abandoned').
+    - terminacion: en castellano ('jaque mate', 'tiempo', 'abandono'...).
+    Si la partida no terminó devuelve ('*', 'Unterminated', 'sin terminar')."""
+    def gana(color):
+        return "1-0" if color == chess.WHITE else "0-1"
+
+    if abandono:
+        return gana(not color_humano), "Abandoned", "abandono"
+    if perdio_por_tiempo is not None:
+        ganador = not perdio_por_tiempo
+        # Si al que le queda tiempo no le alcanza el material para dar mate: tablas.
+        if tablero.has_insufficient_material(ganador):
+            return "1/2-1/2", "Time forfeit", "tiempo (sin material para ganar)"
+        return gana(ganador), "Time forfeit", "tiempo"
+
+    final = tablero.outcome()
+    if final is None:
+        return "*", "Unterminated", "sin terminar"
+    return final.result(), "Normal", MOTIVOS.get(final.termination, "fin de partida")
+
+
+# ---------------------------------------------------------------------------
+# Armar el PGN
+# ---------------------------------------------------------------------------
+
+def puntaje_lichess(valor):
+    """Nuestro valor (centipeones desde blancas, mates como 100000 - distancia)
+    -> PovScore de python-chess, que se escribe como [%eval 0.35] o [%eval #3]."""
+    if es_valor_de_mate(valor):
+        jugadas = max(1, jugadas_hasta_mate(valor))
+        puntaje = chess.engine.Mate(jugadas if valor > 0 else -jugadas)
+    else:
+        puntaje = chess.engine.Cp(int(round(valor)))
+    return chess.engine.PovScore(puntaje, chess.WHITE)
+
+
+def time_control(nombre_reloj):
+    """'3+2' -> '180+2' (el formato del encabezado TimeControl). Sin reloj: '-'."""
+    control = CONTROLES.get(nombre_reloj)
+    if control is None:
+        return "-"
+    inicial, incremento = control
+    return f"{inicial}+{incremento}"
+
+
+def armar_pgn(tablero, color_humano, nivel, reloj, relojes=None, evaluaciones=None,
+              perdio_por_tiempo=None, abandono=False, fecha=None):
+    """Texto PGN de la partida.
+
+    tablero: la partida (con todas sus jugadas).
+    nivel: nombre del nivel de MiniMate ('Intermedio', o 'mixto' si cambió).
+    reloj: nombre del reloj elegido ('3+2', 'Sin reloj').
+    relojes: lista con los segundos que le quedaban al que movió, después de
+        cada jugada (None donde no hay dato). Se escribe como [%clk].
+    evaluaciones: {cantidad de jugadas: valor} (0 = posición inicial). Se
+        escribe como [%eval] después de cada jugada.
+    """
+    fecha = fecha or datetime.now()
+    relojes = relojes or []
+    evaluaciones = evaluaciones or {}
+    resultado, termination, terminacion = resultado_y_terminacion(
+        tablero, color_humano, perdio_por_tiempo, abandono)
+
+    # from_board copia la partida (y la posición inicial, si no es la de siempre).
+    partida = chess.pgn.Game.from_board(tablero)
+    yo, bot = "Vos", f"MiniMate ({nivel})"
+    partida.headers["Event"] = "Partida contra MiniMate"
+    partida.headers["Site"] = "MiniMate"
+    partida.headers["Date"] = fecha.strftime("%Y.%m.%d")
+    partida.headers["Round"] = "-"
+    partida.headers["White"] = yo if color_humano == chess.WHITE else bot
+    partida.headers["Black"] = bot if color_humano == chess.WHITE else yo
+    partida.headers["Result"] = resultado
+    partida.headers["Time"] = fecha.strftime("%H:%M:%S")
+    partida.headers["TimeControl"] = time_control(reloj)
+    partida.headers["Termination"] = termination
+    # Encabezados propios (los programas de ajedrez ignoran los que no conocen).
+    partida.headers["Origen"] = "minimate"
+    partida.headers["MiColor"] = "blancas" if color_humano == chess.WHITE else "negras"
+    partida.headers["Nivel"] = nivel
+    partida.headers["Reloj"] = reloj
+    partida.headers["Terminacion"] = terminacion
+
+    # La evaluación de la posición inicial va como comentario de la partida.
+    if evaluaciones.get(0) is not None:
+        partida.set_eval(puntaje_lichess(evaluaciones[0]))
+
+    # Recorremos las jugadas: cada "nodo" es la posición después de una jugada.
+    nodo = partida
+    cantidad = 0
+    while nodo.variations:
+        nodo = nodo.variations[0]
+        cantidad += 1
+        valor = evaluaciones.get(cantidad)
+        # En la posición de mate no ponemos [%eval]: el resultado ya lo dice.
+        if valor is not None and not nodo.board().is_checkmate():
+            nodo.set_eval(puntaje_lichess(valor))
+        segundos = relojes[cantidad - 1] if cantidad - 1 < len(relojes) else None
+        if segundos is not None:
+            nodo.set_clock(max(0.0, float(segundos)))
+
+    return str(partida)
+
+
+def nombre_de_archivo(fecha=None):
+    """Nombre para el botón de descarga, ej: 'minimate_2026-11-06_1530.pgn'."""
+    fecha = fecha or datetime.now()
+    return fecha.strftime("minimate_%Y-%m-%d_%H%M.pgn")
+
+
+# ---------------------------------------------------------------------------
+# Guardar
+# ---------------------------------------------------------------------------
+
+def guardar_partida(pgn):
+    """Agrega la partida al final de datos/partidas.pgn y devuelve la ruta.
+    (Para usar una base de datos, solo hay que cambiar esta función.)"""
+    carpeta = carpeta_datos()
+    carpeta.mkdir(parents=True, exist_ok=True)
+    ruta = carpeta / ARCHIVO_PARTIDAS
+    # "a" = append: agrega al final sin borrar lo que ya había.
+    # Entre partida y partida va una línea en blanco (así lo pide el formato PGN).
+    with open(ruta, "a", encoding="utf-8") as archivo:
+        if ruta.stat().st_size > 0:
+            archivo.write("\n")
+        archivo.write(pgn.strip() + "\n")
+    return ruta

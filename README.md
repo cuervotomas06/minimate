@@ -17,6 +17,7 @@ Un bot de ajedrez escrito desde cero en Python, con una app web para jugarle, ve
 - **Barra de evaluación** al costado del tablero, como en las páginas de ajedrez, con la ventaja en peones (`+1.5`) o el mate (`M3`). Se puede ocultar.
 - **Reloj** opcional: 3+2, 5+3, 10+5 o 15+10. Como en Lichess, cada reloj arranca recién después de la primera jugada de ese jugador. Si al bot le queda poco tiempo, piensa menos.
 - **Revisión de partida**: al terminar, MiniMate analiza tus jugadas, marca imprecisiones, errores y errores graves, y te muestra con una flecha qué tendrías que haber jugado.
+- **Tus partidas como datos**: cada partida se guarda en PGN (con reloj y evaluación por jugada, en el formato de Lichess) y la página **Mis estadísticas** muestra tus patrones: en qué fase perdés, cuántas piezas colgás, tus errores graves recientes. También podés importar tus partidas de Chess.com (`importar_chesscom.py`).
 
 ## Cómo funciona por dentro
 
@@ -95,7 +96,10 @@ Stockfish no baja de 1320, así que Principiante lo medí haciéndolo jugar cont
 
 ```
 minimate/
-├── app.py                  # la app web (Streamlit)
+├── app.py                  # la app web (Streamlit): arma el menú de páginas
+├── paginas/
+│   ├── jugar.py            # página Jugar: el tablero contra MiniMate
+│   └── estadisticas.py     # página Mis estadísticas
 ├── main.py                 # jugar en la terminal
 ├── src/
 │   ├── evaluacion.py       # cuánto vale una posición
@@ -104,7 +108,11 @@ minimate/
 │   ├── niveles.py          # niveles de dificultad y su Elo
 │   ├── analisis.py         # barra de evaluación y revisión de partida
 │   ├── reloj.py            # controles de tiempo y profundidad según el reloj
+│   ├── guardado.py         # PGN de cada partida y dónde se guarda
+│   ├── datos.py            # partidas -> DataFrames (pandas) para analizarlas
 │   └── componente_tablero/ # tablero interactivo (JavaScript) para Streamlit
+├── importar_chesscom.py    # baja tus partidas de Chess.com (API pública)
+├── datos/                  # tus partidas y la caché de evaluaciones (no se sube)
 ├── tests/                  # tests con pytest
 ├── medir_elo.py            # mide el Elo contra Stockfish
 ├── medir_niveles.py        # compara niveles de MiniMate entre sí

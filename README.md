@@ -108,11 +108,15 @@ minimate/
 │   ├── niveles.py          # niveles de dificultad y su Elo
 │   ├── analisis.py         # barra de evaluación y revisión de partida
 │   ├── reloj.py            # controles de tiempo y profundidad según el reloj
-│   ├── guardado.py         # PGN de cada partida y dónde se guarda
+│   ├── guardado.py         # PGN de cada partida y dónde se guarda (Supabase o archivo)
+│   ├── base_de_datos.py    # conexión con Supabase (leer y escribir filas)
+│   ├── jugador.py          # nombre del jugador (separa las partidas de cada uno)
 │   ├── datos.py            # partidas -> DataFrames (pandas) para analizarlas
 │   └── componente_tablero/ # tablero interactivo (JavaScript) para Streamlit
 ├── importar_chesscom.py    # baja tus partidas de Chess.com (API pública)
-├── datos/                  # tus partidas y la caché de evaluaciones (no se sube)
+├── subir_a_supabase.py     # sube a Supabase las partidas que tenías en datos/
+├── supabase/               # SQL de las tablas y cómo configurar Supabase (LEEME.md)
+├── datos/                  # partidas y caché locales, si no usás Supabase (no se sube)
 ├── tests/                  # tests con pytest
 ├── medir_elo.py            # mide el Elo contra Stockfish
 ├── medir_niveles.py        # compara niveles de MiniMate entre sí

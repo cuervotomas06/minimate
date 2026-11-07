@@ -16,10 +16,17 @@ from streamlit.testing.v1 import AppTest
 RUTA_APP = "../paginas/jugar.py"
 
 
+def app_con_jugador(ruta=RUTA_APP, jugador="Prueba"):
+    """La app con un jugador ya elegido (si no, se queda en "¿Cómo te llamás?")."""
+    at = AppTest.from_file(ruta, default_timeout=60)
+    at.session_state.jugador = jugador
+    return at
+
+
 def abrir_app(fen=None):
     """Abre la app en nivel Principiante (para que el bot responda rápido).
     Si se pasa un FEN, arranca desde esa posición."""
-    at = AppTest.from_file(RUTA_APP, default_timeout=60).run()
+    at = app_con_jugador().run()
     at.select_slider(key="nivel").set_value("Principiante").run()
     if fen is not None:
         at.session_state.tablero = chess.Board(fen)
@@ -148,7 +155,7 @@ def test_texto_y_deshacer_siguen_andando():
 
 def test_selector_de_nivel_muestra_los_niveles():
     from src.niveles import NIVEL_POR_DEFECTO, NIVELES
-    at = AppTest.from_file(RUTA_APP, default_timeout=60).run()
+    at = app_con_jugador().run()
     selector = at.select_slider(key="nivel")
     assert list(selector.options) == list(NIVELES)
     assert selector.value == NIVEL_POR_DEFECTO
@@ -287,7 +294,7 @@ def test_al_bot_se_le_acaba_el_tiempo():
 def sesion_vieja():
     """Simula una sesión abierta con la versión anterior de la app (antes del
     reloj y la revisión): tiene tablero con jugadas, pero no las claves nuevas."""
-    at = AppTest.from_file(RUTA_APP, default_timeout=60)
+    at = app_con_jugador()
     tablero = chess.Board()
     for san in ["e4", "e5", "Nf3", "Nc6"]:
         tablero.push_san(san)
@@ -444,7 +451,7 @@ def test_navegar_la_revision():
     # (En el caption el punto va escapado para que Markdown no lo tome como lista.)
     assert "2\\. blancas · 2 de 2" in [c.value for c in at.caption]
     # Nueva partida sale de la revisión.
-    at.sidebar.button[0].click().run()
+    at.button(key="nueva_partida").click().run()
     assert at.session_state.revision is None
     assert argumentos(at)["fen"] == chess.STARTING_FEN
 
@@ -643,6 +650,6 @@ def test_partida_terminada_no_pregunta(carpeta_de_datos_temporal):
 # --- Menú de páginas (app.py) ------------------------------------------------
 
 def test_app_abre_la_pagina_jugar():
-    at = AppTest.from_file("../app.py", default_timeout=60).run()
+    at = app_con_jugador("../app.py").run()
     assert not at.exception
     assert at.title[0].value == "♟ MiniMate"

@@ -10,16 +10,19 @@
 # - jugadas: una fila por jugada (evaluación antes y después, pérdida, fase,
 #   piezas colgadas...).
 #
-# Lee dos "orígenes": las partidas jugadas en la app (datos/partidas.pgn,
-# origen "minimate") y las importadas de Chess.com (datos/chesscom.pgn,
-# origen "chesscom", ver importar_chesscom.py).
+# Lee dos "orígenes": las partidas jugadas en la app (origen "minimate") y las
+# importadas de Chess.com (origen "chesscom", ver importar_chesscom.py).
+# Si hay credenciales de Supabase las lee de la base (src/base_de_datos.py);
+# si no, de los archivos datos/partidas.pgn y datos/chesscom.pgn.
 #
 # Convención para las evaluaciones de las tablas: en centipeones y desde TU
 # punto de vista (positivo = bueno para vos), limitadas a +-10 peones como en
 # la revisión. Los mates van aparte, en la columna "mate_despues".
 
+import hashlib
 import io
 import math
+import os
 from datetime import datetime
 from pathlib import Path
 
@@ -30,11 +33,21 @@ import pandas as pd
 from src.analisis import (LIMITE_REVISION, PROFUNDIDAD_REVISION, clasificar,
                           jugadas_hasta_mate, perdida_de_la_jugada, valor_posicion)
 from src.evaluacion import VALOR_MATE, VALORES
-from src.guardado import ARCHIVO_PARTIDAS, carpeta_datos
+from src import base_de_datos
+from src.jugador import clave_del_nombre
 from src.motor import es_valor_de_mate
 
+# Archivos locales (cuando no se usa Supabase), en datos/ en la raíz del
+# proyecto. Se puede cambiar con la variable de entorno MINIMATE_DATOS (los
+# tests la usan para no escribir en la carpeta de verdad).
+CARPETA_POR_DEFECTO = Path(__file__).resolve().parent.parent / "datos"
+ARCHIVO_PARTIDAS = "partidas.pgn"
 ARCHIVO_CHESSCOM = "chesscom.pgn"
 ARCHIVO_CACHE = "evaluaciones.parquet"
+
+
+def carpeta_datos():
+    return Path(os.environ.get("MINIMATE_DATOS", CARPETA_POR_DEFECTO))
 
 FASES = ["apertura", "medio juego", "final"]
 
@@ -70,6 +83,10 @@ class CacheEvaluaciones:
         """Solo mira la caché (sin calcular). None si no está."""
         return self.valores.get(tablero.epd())
 
+    def precargar(self, tableros):
+        """Avisa qué posiciones se van a pedir. En el archivo local no hace
+        falta (ya está todo en memoria); la de Supabase las pide todas juntas."""
+
     def guardar(self):
         if self.nuevas == 0 and self.ruta.exists():
             return
@@ -77,6 +94,47 @@ class CacheEvaluaciones:
         tabla = pd.DataFrame({"posicion": list(self.valores), "valor": list(self.valores.values())})
         tabla.to_parquet(self.ruta, index=False)
         self.nuevas = 0
+
+
+class CacheVacia(CacheEvaluaciones):
+    """Caché que no lee ni guarda nada (calcula si se lo piden). Sirve para
+    armar las filas de una partida que ya trae sus [%eval]."""
+
+    def __init__(self):
+        self.ruta = None
+        self.valores = {}
+        self.nuevas = 0
+
+    def guardar(self):
+        pass
+
+
+class CacheSupabase(CacheEvaluaciones):
+    """La misma caché, pero en la tabla "evaluaciones" de Supabase."""
+
+    def __init__(self):
+        self.ruta = None
+        self.valores = {}
+        self.pendientes = {}   # calculadas y todavía no subidas
+
+    def precargar(self, tableros):
+        faltan = {t.epd() for t in tableros} - set(self.valores)
+        if faltan:
+            self.valores.update(base_de_datos.leer_evaluaciones(faltan))
+
+    def obtener(self, tablero, profundidad=PROFUNDIDAD_REVISION):
+        clave = tablero.epd()
+        if clave not in self.valores:
+            self.valores[clave] = int(valor_posicion(tablero, profundidad))
+            self.pendientes[clave] = self.valores[clave]
+            if len(self.pendientes) >= 200:
+                self.guardar()
+        return self.valores[clave]
+
+    def guardar(self):
+        if self.pendientes:
+            base_de_datos.guardar_evaluaciones(self.pendientes)
+            self.pendientes = {}
 
 
 # ---------------------------------------------------------------------------
@@ -324,11 +382,35 @@ def mi_color_de(encabezados, usuario=None):
 
 
 # ---------------------------------------------------------------------------
+# Clave de cada partida
+# ---------------------------------------------------------------------------
+
+def clave_de_juego(juego):
+    """Texto que identifica una partida, para no guardarla dos veces.
+    Chess.com: su link. MiniMate: un "hash" (resumen corto) de la fecha, los
+    jugadores y las jugadas; la misma partida da siempre el mismo hash."""
+    link = juego.headers.get("Link")
+    if link:
+        return link
+    partes = [juego.headers.get(nombre, "") for nombre in ("Date", "Time", "White", "Black", "Result")]
+    partes += [jugada.uci() for jugada in juego.mainline_moves()]
+    return "minimate-" + hashlib.sha1(" ".join(partes).encode("utf-8")).hexdigest()[:20]
+
+
+def es_del_jugador(encabezados, jugador):
+    """¿La partida es de ese jugador? Mira el encabezado "Jugador". Las
+    partidas viejas, sin ese encabezado, cuentan como de cualquiera."""
+    if jugador is None or not encabezados.get("Jugador"):
+        return True
+    return clave_del_nombre(encabezados["Jugador"]) == clave_del_nombre(jugador)
+
+
+# ---------------------------------------------------------------------------
 # Leer PGN
 # ---------------------------------------------------------------------------
 
 COLUMNAS_PARTIDAS = [
-    "partida", "origen", "fecha", "color", "nivel", "reloj", "resultado", "terminacion",
+    "partida", "origen", "clave", "fecha", "color", "nivel", "reloj", "resultado", "terminacion",
     "cantidad_jugadas", "eco", "apertura", "jugada_enroque", "menores_desarrolladas",
     "dama_temprana", "mi_elo", "elo_rival", "link",
 ]
@@ -346,7 +428,8 @@ def _numero_o_nan(texto):
         return math.nan
 
 
-def leer_pgn(fuente, origen=None, usuario=None, evaluar=False, cache=None, al_avanzar=None):
+def leer_pgn(fuente, origen=None, usuario=None, evaluar=False, cache=None, al_avanzar=None,
+             jugador=None, con_pgn=False):
     """Lee un PGN y devuelve (partidas, jugadas) como DataFrames.
 
     fuente: ruta a un archivo .pgn o el texto PGN directamente.
@@ -357,6 +440,9 @@ def leer_pgn(fuente, origen=None, usuario=None, evaluar=False, cache=None, al_av
         (profundidad 2 con quietud) y quedan en la caché. Si es False solo se
         usa lo que ya esté en la caché (y el resto queda vacío: NaN).
     al_avanzar(hechas, total): para mostrar el progreso al evaluar.
+    jugador: si se pasa, solo las partidas de ese jugador (encabezado Jugador).
+    con_pgn: si es True, agrega a "partidas" una columna "pgn" con el texto de
+        cada partida (para subirla a Supabase).
     """
     if isinstance(fuente, Path) or (isinstance(fuente, str) and "\n" not in fuente
                                     and fuente.lower().endswith(".pgn")):
@@ -379,6 +465,8 @@ def leer_pgn(fuente, origen=None, usuario=None, evaluar=False, cache=None, al_av
         mi_color = mi_color_de(encabezados, usuario)
         if mi_color is None or juego.errors:
             continue  # no sabemos quién soy, o el PGN está roto: la salteamos
+        if not es_del_jugador(encabezados, jugador):
+            continue  # es de otro jugador
         identificador = f"{su_origen}-{numero_partida:05d}"
         fecha = fecha_de(encabezados)
 
@@ -392,6 +480,7 @@ def leer_pgn(fuente, origen=None, usuario=None, evaluar=False, cache=None, al_av
             tablero.push(nodo.move)
             tableros.append(tablero.copy(stack=False))
         # Completamos las evaluaciones que falten (de la caché, o calculando).
+        cache.precargar([t for k, t in enumerate(tableros) if valores[k] is None])
         for k, posicion in enumerate(tableros):
             if valores[k] is None:
                 if posicion.is_game_over():
@@ -444,6 +533,7 @@ def leer_pgn(fuente, origen=None, usuario=None, evaluar=False, cache=None, al_av
         filas_partidas.append({
             "partida": identificador,
             "origen": su_origen,
+            "clave": clave_de_juego(juego),
             "fecha": fecha,
             "color": "blancas" if mi_color == chess.WHITE else "negras",
             "nivel": encabezados.get("Nivel"),
@@ -460,6 +550,8 @@ def leer_pgn(fuente, origen=None, usuario=None, evaluar=False, cache=None, al_av
             "elo_rival": _numero_o_nan(elo_rival),
             "link": encabezados.get("Link"),
         })
+        if con_pgn:
+            filas_partidas[-1]["pgn"] = str(juego)
 
         # Una fila por jugada.
         for k, nodo in enumerate(nodos):
@@ -501,15 +593,25 @@ def leer_pgn(fuente, origen=None, usuario=None, evaluar=False, cache=None, al_av
 
     if evaluar:
         cache.guardar()
-    partidas = pd.DataFrame(filas_partidas, columns=COLUMNAS_PARTIDAS)
+    columnas = COLUMNAS_PARTIDAS + (["pgn"] if con_pgn else [])
+    partidas = pd.DataFrame(filas_partidas, columns=columnas)
     jugadas = pd.DataFrame(filas_jugadas, columns=COLUMNAS_JUGADAS)
     jugadas["fase"] = pd.Categorical(jugadas["fase"], categories=FASES, ordered=True)
     return partidas, jugadas
 
 
-def cargar_todo(carpeta=None, evaluar=False, al_avanzar=None):
+def tablas_vacias():
+    return pd.DataFrame(columns=COLUMNAS_PARTIDAS), pd.DataFrame(columns=COLUMNAS_JUGADAS)
+
+
+def cargar_todo(carpeta=None, evaluar=False, al_avanzar=None, jugador=None):
     """Lee las dos fuentes (MiniMate y Chess.com) y las junta.
-    La columna "origen" dice de dónde viene cada partida."""
+    La columna "origen" dice de dónde viene cada partida.
+    jugador: de quién son las partidas (con Supabase es obligatorio).
+    Si hay Supabase (y no se pasa una carpeta) lee de la base; si no, de los
+    archivos de datos/."""
+    if carpeta is None and base_de_datos.hay_supabase():
+        return leer_de_supabase(jugador)
     carpeta = Path(carpeta) if carpeta is not None else carpeta_datos()
     cache = CacheEvaluaciones(carpeta / ARCHIVO_CACHE)
     tablas = []
@@ -517,11 +619,78 @@ def cargar_todo(carpeta=None, evaluar=False, al_avanzar=None):
         ruta = carpeta / archivo
         if ruta.exists():
             tablas.append(leer_pgn(ruta, origen=origen, evaluar=evaluar, cache=cache,
-                                   al_avanzar=al_avanzar))
+                                   al_avanzar=al_avanzar, jugador=jugador))
     if not tablas:
-        return (pd.DataFrame(columns=COLUMNAS_PARTIDAS), pd.DataFrame(columns=COLUMNAS_JUGADAS))
+        return tablas_vacias()
     partidas = pd.concat([t[0] for t in tablas], ignore_index=True)
     jugadas = pd.concat([t[1] for t in tablas], ignore_index=True)
+    jugadas["fase"] = pd.Categorical(jugadas["fase"], categories=FASES, ordered=True)
+    return partidas, jugadas
+
+
+# ---------------------------------------------------------------------------
+# Supabase: de filas de la base a DataFrames, y al revés
+# ---------------------------------------------------------------------------
+
+# Columnas enteras: en JSON tienen que ir como 10 y no como 10.0 (si no,
+# Postgres no las acepta como integer).
+ENTERAS = {"cantidad_jugadas", "jugada_enroque", "menores_desarrolladas", "mi_elo",
+           "elo_rival", "indice", "numero", "mate_despues"}
+
+
+def fila_para_base(fila, columnas):
+    """Un diccionario listo para mandar en JSON: sin NaN y con enteros de verdad."""
+    resultado = {}
+    for columna in columnas:
+        valor = base_de_datos.limpiar(fila.get(columna))
+        if columna in ENTERAS and valor is not None:
+            valor = int(valor)
+        resultado[columna] = valor
+    return resultado
+
+
+def filas_para_base(partidas, jugadas):
+    """[(partida, [jugadas])] de unos DataFrames de leer_pgn(con_pgn=True),
+    con las columnas de las tablas de Supabase."""
+    columnas_partida = [c for c in COLUMNAS_PARTIDAS if c != "partida"] + ["pgn"]
+    columnas_jugada = [c for c in COLUMNAS_JUGADAS if c not in ("partida", "origen", "fecha")]
+    resultado = []
+    for _, partida in partidas.iterrows():
+        suyas = jugadas[jugadas["partida"] == partida["partida"]]
+        resultado.append((
+            fila_para_base(partida.to_dict(), columnas_partida),
+            [fila_para_base(j.to_dict(), columnas_jugada) for _, j in suyas.iterrows()],
+        ))
+    return resultado
+
+
+def leer_de_supabase(jugador):
+    """(partidas, jugadas) del jugador, leídas de Supabase."""
+    if not jugador:
+        raise ValueError("Con Supabase hace falta saber de qué jugador leer.")
+    from src.jugador import normalizar_nombre
+    jugador_id = base_de_datos.id_del_jugador(normalizar_nombre(jugador), clave_del_nombre(jugador))
+    filas = base_de_datos.leer_partidas(jugador_id)
+    if not filas:
+        return tablas_vacias()
+    partidas = pd.DataFrame(filas).rename(columns={"id": "partida"})
+    # timestamptz llega como texto con zona horaria: lo pasamos a fecha sin zona.
+    partidas["fecha"] = pd.to_datetime(partidas["fecha"], utc=True, format="ISO8601").dt.tz_localize(None)
+    partidas = partidas.reindex(columns=COLUMNAS_PARTIDAS)
+    for columna in ("jugada_enroque", "mi_elo", "elo_rival"):
+        partidas[columna] = pd.to_numeric(partidas[columna], errors="coerce").astype(float)
+
+    jugadas = pd.DataFrame(base_de_datos.leer_jugadas(partidas["partida"].tolist()))
+    if jugadas.empty:
+        jugadas = pd.DataFrame(columns=COLUMNAS_JUGADAS)
+    else:
+        jugadas = jugadas.rename(columns={"partida_id": "partida"})
+        # origen y fecha vienen de la partida (en la base no se repiten).
+        jugadas = jugadas.merge(partidas[["partida", "origen", "fecha"]], on="partida", how="left")
+        jugadas = jugadas.reindex(columns=COLUMNAS_JUGADAS)
+        for columna in ("reloj_restante", "eval_antes", "eval_despues", "mate_despues", "perdida"):
+            jugadas[columna] = pd.to_numeric(jugadas[columna], errors="coerce").astype(float)
+        jugadas["es_mia"] = jugadas["es_mia"].astype(bool)
     jugadas["fase"] = pd.Categorical(jugadas["fase"], categories=FASES, ordered=True)
     return partidas, jugadas
 

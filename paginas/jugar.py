@@ -23,7 +23,10 @@ from src.analisis import (SIMBOLOS, datos_barra, evaluaciones_de_la_revision, re
                           revisar_partida, texto_contador)
 from src.componente_tablero import procesar_valor, tablero_interactivo
 from src.evaluacion import VALOR_MATE
-from src.guardado import armar_pgn, guardar_partida, nombre_de_archivo
+from src.base_de_datos import resumir_error
+from src.guardado import (armar_pgn, guardar_en_archivo, guardar_partida,
+                          nombre_de_archivo)
+from src.jugador import pedir_nombre
 from src.motor import mejor_jugada
 from src.niveles import NIVEL_POR_DEFECTO, NIVELES, describir
 from src.reloj import CONTROL_POR_DEFECTO, CONTROLES, profundidad_segun_reloj
@@ -107,7 +110,9 @@ def valores_iniciales():
         # Guardado: se guarda una sola vez, al terminar.
         "partida_guardada": False,
         "pgn_partida": None,           # texto PGN (para el botón de descarga)
-        "ruta_guardado": None,         # dónde se guardó (o None)
+        "ruta_guardado": None,         # dónde se guardó: "Supabase" o la ruta (o None)
+        "error_guardado": None,        # si falló Supabase: el error, para mostrarlo
+        "respaldo_local": None,        # si falló Supabase: la copia en datos/partidas.pgn
         "analisis_partida": None,      # análisis de la partida (lo usan el PGN y la revisión)
         "revision": None,              # lista de análisis (None = no estás revisando)
         "evaluaciones_revision": {},   # {cantidad de jugadas: valor} de cada posición
@@ -456,18 +461,45 @@ def guardar_si_termino(tablero):
     if not ya_jugo(tablero, color_humano()):
         return
     analisis = analizar_partida(tablero, "Guardando la partida: analizando tus jugadas...")
-    pgn = armar_pgn(tablero, color_humano(), nombre_del_nivel(),
-                    st.session_state.get("control", CONTROL_POR_DEFECTO),
-                    relojes=st.session_state.relojes,
-                    evaluaciones=analisis["evaluaciones"],
-                    perdio_por_tiempo=st.session_state.perdio_por_tiempo,
-                    abandono=st.session_state.abandono)
-    st.session_state.pgn_partida = pgn
+    if st.session_state.pgn_partida is None:
+        st.session_state.pgn_partida = armar_pgn(
+            tablero, color_humano(), nombre_del_nivel(),
+            st.session_state.get("control", CONTROL_POR_DEFECTO),
+            relojes=st.session_state.relojes,
+            evaluaciones=analisis["evaluaciones"],
+            perdio_por_tiempo=st.session_state.perdio_por_tiempo,
+            abandono=st.session_state.abandono,
+            jugador=st.session_state.jugador)
+    pgn = st.session_state.pgn_partida
     try:
-        st.session_state.ruta_guardado = str(guardar_partida(pgn))
-    except OSError:
-        # Por ejemplo, sin permiso para escribir: queda el botón de descarga.
+        st.session_state.ruta_guardado = str(guardar_partida(pgn, st.session_state.jugador))
+        st.session_state.error_guardado = None
+        # Avisamos a la página de estadísticas que hay datos nuevos.
+        st.session_state.version_datos = st.session_state.get("version_datos", 0) + 1
+    except Exception as error:  # noqa: BLE001
+        # Supabase falló (sin internet, clave mal...) o no se pudo escribir el
+        # archivo. La partida NO se pierde: queda el botón de descarga y una
+        # copia local (si se puede), y se puede reintentar.
         st.session_state.ruta_guardado = None
+        st.session_state.error_guardado = resumir_error(error)
+        if st.session_state.respaldo_local is None:
+            try:
+                st.session_state.respaldo_local = str(guardar_en_archivo(pgn))
+            except OSError:
+                pass
+
+
+def reintentar_guardado():
+    """Botón "Reintentar": vuelve a probar en la próxima corrida."""
+    inicializar_estado()  # ver jugar_humano
+    st.session_state.partida_guardada = False
+
+
+def cambiar_de_jugador():
+    """Botón "Cambiar de jugador": olvida el nombre y empieza de cero."""
+    inicializar_estado()  # ver jugar_humano
+    st.session_state.jugador = None
+    nueva_partida()
 
 
 def historial_san(tablero):
@@ -616,6 +648,12 @@ def texto_jugada(analisis):
 inicializar_estado()
 tablero = st.session_state.tablero
 
+# Antes de jugar: ¿cómo te llamás? (para separar las partidas de cada persona).
+if not st.session_state.get("jugador"):
+    st.title("♟ MiniMate")
+    pedir_nombre()
+    st.stop()
+
 # Un cambio que esperaba confirmación, pero la partida ya terminó (por ejemplo,
 # te dieron mate mientras tanto): ya no hace falta preguntar, se aplica.
 if st.session_state.cambio_pendiente is not None and not partida_en_curso():
@@ -628,6 +666,11 @@ if st.session_state.cambio_pendiente is not None and not partida_en_curso():
 if st.session_state.nueva_despues is not None:
     pendiente = st.session_state.nueva_despues
     guardar_si_termino(tablero)
+    if st.session_state.error_guardado is not None:
+        # No se pudo guardar: NO empezamos otra partida, así podés descargar
+        # esta o reintentar. El cambio pedido se descarta.
+        st.session_state.nueva_despues = None
+        st.rerun()
     if pendiente["tipo"] == "color":
         st.session_state.color = pendiente["valor"]
     elif pendiente["tipo"] == "reloj":
@@ -642,6 +685,10 @@ if st.session_state.nueva_despues is not None:
 
 with st.sidebar:
     st.header("Opciones")
+    st.markdown(f"👤 Jugando como **{st.session_state.jugador}**")
+    st.button("Cambiar de jugador", key="cambiar_jugador", on_click=cambiar_de_jugador,
+              disabled=partida_en_curso(),
+              help="Terminá o abandoná la partida primero." if partida_en_curso() else None)
     # Cambiar de color arranca una partida nueva (on_change).
     st.radio("Jugás con", ["Blancas", "Negras"], key="color", on_change=al_cambiar_color)
     # Dificultad: de menos a más Elo. Se puede cambiar en medio de la partida.
@@ -746,8 +793,20 @@ with columna_panel:
     guardar_si_termino(tablero)
     if partida_terminada(tablero):
         if st.session_state.pgn_partida is not None:
-            if st.session_state.ruta_guardado:
+            if st.session_state.ruta_guardado == "Supabase":
+                st.caption("💾 Partida guardada en Supabase")
+            elif st.session_state.ruta_guardado:
                 st.caption(f"💾 Partida guardada en `{st.session_state.ruta_guardado}`")
+            if st.session_state.error_guardado is not None:
+                aviso = ("**No se pudo guardar la partida en la base de datos** "
+                         f"({st.session_state.error_guardado}). No la pierdas: "
+                         "descargá el PGN con el botón de abajo, o reintentá.")
+                if st.session_state.respaldo_local:
+                    aviso += (f" También quedó una copia en `{st.session_state.respaldo_local}` "
+                              "(en Streamlit Cloud se borra al reiniciar).")
+                st.error(aviso)
+                st.button("🔁 Reintentar guardar", key="reintentar_guardado",
+                          on_click=reintentar_guardado, width="stretch")
             # En Streamlit Cloud los archivos se borran al reiniciar: descargala.
             st.download_button("⬇ Descargar PGN", data=st.session_state.pgn_partida,
                                file_name=nombre_de_archivo(), mime="application/x-chess-pgn",

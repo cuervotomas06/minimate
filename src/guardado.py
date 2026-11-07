@@ -6,31 +6,25 @@
 #     1. e4 { [%eval 0.3] [%clk 0:02:58] } e5 { [%eval 0.25] [%clk 0:03:00] }
 # Usamos ese mismo formato, así cualquier programa de ajedrez puede leerlo.
 #
-# El resto de la app solo usa armar_pgn() y guardar_partida(). Para pasar más
-# adelante a una base de datos alcanza con cambiar guardar_partida().
+# El resto de la app solo usa armar_pgn() y guardar_partida(), que decide
+# dónde guardar:
+# - si hay credenciales de Supabase: en la base (tablas partidas y jugadas);
+# - si no: al final de datos/partidas.pgn, como antes.
 
-import os
 from datetime import datetime
-from pathlib import Path
 
 import chess
 import chess.engine
 import chess.pgn
 
+from src import base_de_datos
 from src.analisis import jugadas_hasta_mate
+from src.datos import (ARCHIVO_PARTIDAS, CacheVacia, carpeta_datos, clave_de_juego,
+                       filas_para_base, leer_pgn)
 from src.evaluacion import VALOR_MATE
+from src.jugador import clave_del_nombre, normalizar_nombre
 from src.motor import es_valor_de_mate
 from src.reloj import CONTROLES
-
-# Carpeta donde se guardan los datos (datos/ en la raíz del proyecto).
-# Se puede cambiar con la variable de entorno MINIMATE_DATOS (los tests la
-# usan para no escribir en la carpeta de verdad).
-CARPETA_POR_DEFECTO = Path(__file__).resolve().parent.parent / "datos"
-ARCHIVO_PARTIDAS = "partidas.pgn"
-
-
-def carpeta_datos():
-    return Path(os.environ.get("MINIMATE_DATOS", CARPETA_POR_DEFECTO))
 
 
 # ---------------------------------------------------------------------------
@@ -96,7 +90,7 @@ def time_control(nombre_reloj):
 
 
 def armar_pgn(tablero, color_humano, nivel, reloj, relojes=None, evaluaciones=None,
-              perdio_por_tiempo=None, abandono=False, fecha=None):
+              perdio_por_tiempo=None, abandono=False, fecha=None, jugador=None):
     """Texto PGN de la partida.
 
     tablero: la partida (con todas sus jugadas).
@@ -106,6 +100,7 @@ def armar_pgn(tablero, color_humano, nivel, reloj, relojes=None, evaluaciones=No
         cada jugada (None donde no hay dato). Se escribe como [%clk].
     evaluaciones: {cantidad de jugadas: valor} (0 = posición inicial). Se
         escribe como [%eval] después de cada jugada.
+    jugador: nombre de quien jugó (encabezado "Jugador").
     """
     fecha = fecha or datetime.now()
     relojes = relojes or []
@@ -115,7 +110,8 @@ def armar_pgn(tablero, color_humano, nivel, reloj, relojes=None, evaluaciones=No
 
     # from_board copia la partida (y la posición inicial, si no es la de siempre).
     partida = chess.pgn.Game.from_board(tablero)
-    yo, bot = "Vos", f"MiniMate ({nivel})"
+    yo = normalizar_nombre(jugador) if jugador else "Vos"
+    bot = f"MiniMate ({nivel})"
     partida.headers["Event"] = "Partida contra MiniMate"
     partida.headers["Site"] = "MiniMate"
     partida.headers["Date"] = fecha.strftime("%Y.%m.%d")
@@ -132,6 +128,8 @@ def armar_pgn(tablero, color_humano, nivel, reloj, relojes=None, evaluaciones=No
     partida.headers["Nivel"] = nivel
     partida.headers["Reloj"] = reloj
     partida.headers["Terminacion"] = terminacion
+    if jugador:
+        partida.headers["Jugador"] = normalizar_nombre(jugador)
 
     # La evaluación de la posición inicial va como comentario de la partida.
     if evaluaciones.get(0) is not None:
@@ -164,9 +162,20 @@ def nombre_de_archivo(fecha=None):
 # Guardar
 # ---------------------------------------------------------------------------
 
-def guardar_partida(pgn):
-    """Agrega la partida al final de datos/partidas.pgn y devuelve la ruta.
-    (Para usar una base de datos, solo hay que cambiar esta función.)"""
+def guardar_partida(pgn, jugador=None):
+    """Guarda la partida donde corresponda y devuelve dónde quedó:
+    - "Supabase" si hay credenciales de Supabase;
+    - la ruta de datos/partidas.pgn si no.
+    Si Supabase falla (sin internet, error) lanza base_de_datos.ErrorBaseDeDatos:
+    la app avisa y ofrece descargar el PGN."""
+    if base_de_datos.hay_supabase():
+        subir_partidas(pgn, jugador)
+        return "Supabase"
+    return guardar_en_archivo(pgn)
+
+
+def guardar_en_archivo(pgn):
+    """Agrega la partida al final de datos/partidas.pgn y devuelve la ruta."""
     carpeta = carpeta_datos()
     carpeta.mkdir(parents=True, exist_ok=True)
     ruta = carpeta / ARCHIVO_PARTIDAS
@@ -177,3 +186,46 @@ def guardar_partida(pgn):
             archivo.write("\n")
         archivo.write(pgn.strip() + "\n")
     return ruta
+
+
+def subir_partidas(pgn, jugador=None, origen=None, cache=None, ya_guardadas=None,
+                   al_avanzar=None, jugador_si_falta=None):
+    """Sube a Supabase todas las partidas de un texto PGN. Devuelve
+    (nuevas, repetidas). Las que ya estaban no se duplican.
+
+    jugador: a quién pertenecen (todas). Si es None, se usa el encabezado
+        "Jugador" de cada partida, y si no lo tiene, jugador_si_falta.
+    cache: de dónde sacar evaluaciones que falten (por defecto ninguna).
+    ya_guardadas: {(clave del jugador, clave de la partida)} ya subidas, para
+        no volver a analizarlas (si no se pasa, la base igual las ignora).
+    """
+    import io
+    cache = cache if cache is not None else CacheVacia()
+    ids = {}            # clave del jugador -> id en la base
+    ya_guardadas = ya_guardadas if ya_guardadas is not None else set()
+    nuevas = repetidas = 0
+
+    juegos = []
+    lector = io.StringIO(pgn)
+    while (juego := chess.pgn.read_game(lector)) is not None:
+        juegos.append(juego)
+
+    for numero, juego in enumerate(juegos, start=1):
+        nombre = normalizar_nombre(jugador or juego.headers.get("Jugador") or jugador_si_falta)
+        if not nombre:
+            raise ValueError("La partida no dice de qué jugador es: pasá jugador=...")
+        clave_jugador = clave_del_nombre(nombre)
+        if (clave_jugador, clave_de_juego(juego)) in ya_guardadas:
+            repetidas += 1
+        else:
+            if clave_jugador not in ids:
+                ids[clave_jugador] = base_de_datos.id_del_jugador(nombre, clave_jugador)
+            partidas, jugadas = leer_pgn(str(juego), origen=origen, cache=cache, con_pgn=True)
+            for partida, sus_jugadas in filas_para_base(partidas, jugadas):
+                if base_de_datos.guardar_partida(ids[clave_jugador], partida, sus_jugadas):
+                    nuevas += 1
+                else:
+                    repetidas += 1
+        if al_avanzar is not None:
+            al_avanzar(numero, len(juegos))
+    return nuevas, repetidas

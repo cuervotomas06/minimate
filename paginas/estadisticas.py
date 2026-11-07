@@ -1,15 +1,18 @@
 # Página "Mis estadísticas": cómo jugás, a partir de tus partidas guardadas.
 #
 # Aparece en el menú lateral gracias a app.py (st.navigation).
-# Los datos salen de src/datos.py (partidas de MiniMate y de Chess.com).
+# Los datos salen de src/datos.py (partidas de MiniMate y de Chess.com), de
+# Supabase si hay credenciales o de los archivos de datos/ si no. Siempre
+# solo las del jugador de la sesión.
 
 import chess
 import chess.svg
 import pandas as pd
 import streamlit as st
 
-from src.datos import FASES, cargar_todo, fase_de_la_derrota
-from src.guardado import carpeta_datos
+from src import base_de_datos
+from src.datos import FASES, cargar_todo, carpeta_datos, fase_de_la_derrota
+from src.jugador import pedir_nombre
 from src.motor import mejor_jugada
 
 st.set_page_config(page_title="Mis estadísticas · MiniMate", page_icon="📊")
@@ -18,16 +21,25 @@ st.set_page_config(page_title="Mis estadísticas · MiniMate", page_icon="📊")
 COLOR_SERIE = "#2a78d6"
 
 
-@st.cache_data(show_spinner="Leyendo tus partidas...")
-def cargar(carpeta, firma):
-    """Lee las partidas. 'firma' (fechas de modificación de los archivos) hace
-    que la caché se renueve cuando se guarda una partida nueva."""
-    return cargar_todo(carpeta)
+# ttl=300: como mucho cada 5 minutos se vuelve a leer (por ejemplo, si
+# importaste partidas de Chess.com desde la terminal).
+@st.cache_data(show_spinner="Leyendo tus partidas...", ttl=300)
+def cargar(jugador, firma):
+    """Lee las partidas del jugador. 'firma' hace que la caché se renueve
+    cuando hay datos nuevos (ver firma_de)."""
+    return cargar_todo(jugador=jugador)
 
 
 def firma_de(carpeta):
+    """Algo que cambia cuando hay partidas nuevas: con archivos, sus fechas de
+    modificación; con Supabase, un contador que sube cada vez que la página
+    Jugar guarda una partida."""
+    if base_de_datos.hay_supabase():
+        return ("supabase", st.session_state.get("version_datos", 0))
+    if not carpeta.exists():
+        return ()
     archivos = sorted(carpeta.glob("*.pgn")) + sorted(carpeta.glob("*.parquet"))
-    return tuple((a.name, a.stat().st_mtime) for a in archivos)
+    return (str(carpeta),) + tuple((a.name, a.stat().st_mtime) for a in archivos)
 
 
 def porcentaje(parte, total):
@@ -36,19 +48,33 @@ def porcentaje(parte, total):
 
 st.title("📊 Mis estadísticas")
 
-carpeta = carpeta_datos()
-partidas, jugadas = cargar(str(carpeta), firma_de(carpeta) if carpeta.exists() else ())
+# Las estadísticas son de un jugador: si todavía no dijiste quién sos, primero eso.
+if not st.session_state.get("jugador"):
+    pedir_nombre()
+    st.stop()
+jugador = st.session_state.jugador
+st.caption(f"👤 Partidas de **{jugador}**")
+
+try:
+    partidas, jugadas = cargar(jugador, firma_de(carpeta_datos()))
+except base_de_datos.ErrorBaseDeDatos as error:
+    st.error(f"No se pudieron leer tus partidas de la base de datos ({error}). "
+             "Revisá la conexión y volvé a cargar la página.")
+    st.stop()
 
 if partidas.empty:
+    donde = ("en la base de datos" if base_de_datos.hay_supabase()
+             else "en `datos/partidas.pgn`")
     st.info(
         "Todavía no hay partidas para analizar.\n\n"
         "**Cómo empezar:**\n"
         "1. Jugá contra MiniMate en la página **Jugar**. Cada partida que "
-        "termina (o abandonás) se guarda sola en `datos/partidas.pgn`.\n"
+        f"termina (o abandonás) se guarda sola {donde}.\n"
         "2. Opcional: importá tus partidas de Chess.com con\n"
-        "   `python importar_chesscom.py --usuario TU_USUARIO --evaluar`.\n\n"
-        "En Streamlit Cloud los archivos se borran al reiniciar la app: "
-        "estas estadísticas funcionan mejor corriendo MiniMate en tu compu.")
+        f"   `python importar_chesscom.py --usuario TU_USUARIO --jugador \"{jugador}\" --evaluar`.")
+    if not base_de_datos.hay_supabase():
+        st.caption("Sin base de datos, en Streamlit Cloud los archivos se borran al "
+                   "reiniciar la app: conviene correr MiniMate en tu compu.")
     st.stop()
 
 # Filtro por origen (MiniMate / Chess.com), arriba de todo.
@@ -86,7 +112,8 @@ sin_evaluar = mias["perdida"].isna().mean() if len(mias) else 0
 if sin_evaluar > 0.05:
     st.caption(f"⚠ El {sin_evaluar:.0%} de tus jugadas todavía no tiene evaluación, así que los "
                "errores y las fases están incompletos. Corré "
-               "`python importar_chesscom.py --sin-bajar --evaluar` para calcularlas.")
+               f"`python importar_chesscom.py --sin-bajar --jugador \"{jugador}\" --evaluar` "
+               "para calcularlas.")
 
 # --- ¿En qué fase pierdo? -------------------------------------------------------
 st.subheader("¿En qué fase pierdo la partida?")

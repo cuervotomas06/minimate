@@ -9,6 +9,7 @@
 import json
 
 import chess
+import pytest
 from streamlit.testing.v1 import AppTest
 
 # La ruta es relativa a ESTE archivo (tests/). Probamos la página Jugar
@@ -16,11 +17,18 @@ from streamlit.testing.v1 import AppTest
 RUTA_APP = "../paginas/jugar.py"
 
 
-def app_con_jugador(ruta=RUTA_APP, jugador="Prueba"):
-    """La app con un jugador ya elegido (si no, se queda en "¿Cómo te llamás?")."""
-    at = AppTest.from_file(ruta, default_timeout=60)
-    at.session_state.jugador = jugador
-    return at
+@pytest.fixture(autouse=True)
+def con_sesion_iniciada(google):
+    """En estos tests jugás con la sesión de Google iniciada (simulada): si
+    no, como invitado, no se guardaría nada. Los tests de invitado y de
+    cuentas están en tests/test_cuentas.py."""
+    google.entrar()
+    return google
+
+
+def app_con_jugador(ruta=RUTA_APP):
+    """La app (con la sesión que haya: ver con_sesion_iniciada)."""
+    return AppTest.from_file(ruta, default_timeout=60)
 
 
 def abrir_app(fen=None):

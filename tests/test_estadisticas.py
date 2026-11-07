@@ -1,6 +1,7 @@
 # Tests de la página "Mis estadísticas" (paginas/estadisticas.py) con AppTest.
 # Se corren con: pytest
 
+import pytest
 from streamlit.testing.v1 import AppTest
 
 from tests.test_datos import PGN_CHESSCOM, pgn_minimate
@@ -8,17 +9,22 @@ from tests.test_datos import PGN_CHESSCOM, pgn_minimate
 RUTA_PAGINA = "../paginas/estadisticas.py"
 
 
-def pagina_con_jugador(jugador="Prueba"):
-    at = AppTest.from_file(RUTA_PAGINA, default_timeout=60)
-    at.session_state.jugador = jugador
-    return at
+@pytest.fixture(autouse=True)
+def con_sesion_iniciada(google):
+    """Las estadísticas piden sesión iniciada (simulada con Google)."""
+    google.entrar()
+    return google
+
+
+def pagina_con_jugador():
+    return AppTest.from_file(RUTA_PAGINA, default_timeout=60)
 
 
 def test_sin_datos_explica_como_empezar(carpeta_de_datos_temporal):
     at = pagina_con_jugador().run()
     assert not at.exception
     assert "Cómo empezar" in at.info[0].value
-    assert "importar_chesscom.py" in at.info[0].value
+    assert "Mis cuentas de ajedrez" in at.info[0].value
 
 
 def test_con_datos_muestra_las_estadisticas(carpeta_de_datos_temporal):
@@ -35,7 +41,7 @@ def test_con_datos_muestra_las_estadisticas(carpeta_de_datos_temporal):
     assert "¿En qué fase pierdo la partida?" in titulos
     assert "Tus 5 errores graves más recientes" in titulos
     # La de Chess.com no está evaluada: avisa cómo calcularlo.
-    assert any("--evaluar" in c.value for c in at.caption)
+    assert any("Actualizar" in c.value for c in at.caption)
 
 
 def test_filtrar_por_origen(carpeta_de_datos_temporal):

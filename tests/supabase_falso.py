@@ -17,6 +17,7 @@ CLAVES_UNICAS = {
     "partidas": ("jugador_id", "clave"),
     "jugadas": ("partida_id", "indice"),
     "evaluaciones": ("posicion",),
+    "cuentas": ("proveedor", "id_externo"),
 }
 
 
@@ -49,6 +50,8 @@ class LlamadaRpc:
 
     def execute(self):
         self.base._pedido()
+        if self.nombre == "fusionar_jugadores":
+            return Respuesta(self._fusionar())
         assert self.nombre == "guardar_partida"
         jugador = self.parametros["p_jugador"]
         partida = copy.deepcopy(self.parametros["p_partida"])
@@ -63,6 +66,28 @@ class LlamadaRpc:
         for jugada in self.parametros["p_jugadas"]:
             self.base.tablas["jugadas"].append({**copy.deepcopy(jugada), "partida_id": nuevo_id})
         return Respuesta(nuevo_id)
+
+    def _fusionar(self):
+        """Como fusionar_jugadores en migracion_01_cuentas.sql."""
+        desde, hacia = self.parametros["p_desde"], self.parametros["p_hacia"]
+        if desde == hacia:
+            return 0
+        tablas = self.base.tablas
+        claves_hacia = {p["clave"] for p in tablas["partidas"] if p["jugador_id"] == hacia}
+        repetidas = {p["id"] for p in tablas["partidas"]
+                     if p["jugador_id"] == desde and p["clave"] in claves_hacia}
+        tablas["partidas"] = [p for p in tablas["partidas"] if p["id"] not in repetidas]
+        tablas["jugadas"] = [j for j in tablas["jugadas"] if j["partida_id"] not in repetidas]
+        movidas = 0
+        for partida in tablas["partidas"]:
+            if partida["jugador_id"] == desde:
+                partida["jugador_id"] = hacia
+                movidas += 1
+        for cuenta in tablas["cuentas"]:
+            if cuenta["jugador_id"] == desde:
+                cuenta["jugador_id"] = hacia
+        tablas["jugadores"] = [j for j in tablas["jugadores"] if j["id"] != desde]
+        return movidas
 
 
 class Consulta:
@@ -131,7 +156,7 @@ class Consulta:
             existente = next((f for f in tabla if all(f.get(c) == fila.get(c) for c in claves)), None)
             if existente is None:
                 nueva = dict(fila)
-                if self.tabla in ("jugadores", "partidas"):
+                if self.tabla in ("jugadores", "partidas", "cuentas"):
                     nueva.setdefault("id", str(uuid.uuid4()))
                 tabla.append(nueva)
                 resultado.append(copy.deepcopy(nueva))

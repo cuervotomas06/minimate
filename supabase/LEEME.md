@@ -23,6 +23,18 @@ Qué hace cada parte:
 | 6 | `grant` / `revoke` | Permisos. Como el proyecto tiene desactivado *"Automatically expose new tables"*, las tablas nuevas no son accesibles por la API hasta que se les da permiso. Solo se lo damos a `service_role` (la clave secreta), y se lo sacamos explícitamente a `anon` y `authenticated` (las claves públicas). |
 | 7 | RLS y políticas | Row Level Security queda activado en las cuatro tablas. Hay una política de acceso total para `service_role`. Para `anon` y `authenticated` no hay ninguna: con RLS activado y sin políticas, no ven ni escriben nada. |
 
+### Migración 01: cuentas (Google, Lichess, Chess.com)
+
+Después de `esquema.sql`, corré **una vez** [`migracion_01_cuentas.sql`](migracion_01_cuentas.sql).
+Solo agrega cosas; no toca los datos que ya hay.
+
+| Parte | Qué hace |
+|---|---|
+| 1 | Tabla `cuentas`: une un jugador con una cuenta externa (`proveedor` = `google`, `lichess` o `chesscom`; `id_externo`, `usuario`, `verificado`, `vinculada`). `unique (proveedor, id_externo)`: cada cuenta externa, un solo jugador. |
+| 2 | Permite `origen = 'lichess'` en `partidas`. |
+| 3 | Función `fusionar_jugadores`: pasa partidas y cuentas de un jugador a otro sin duplicar, en una transacción. Se usa para mudar "mantarraya" a tu cuenta, y cuando alguien entró primero con Lichess y después lo vincula a Google. |
+| 4 y 5 | Igual que el resto: `GRANT` solo a `service_role`, RLS activado, ninguna política para `anon` ni `authenticated`. |
+
 ## 2. Qué clave usar
 
 En Supabase → **Project Settings** → **API Keys** hay dos tipos de clave:
@@ -38,18 +50,19 @@ En Supabase → **Project Settings** → **API Keys** hay dos tipos de clave:
 1. **Corre en el servidor.** Todo el código de Streamlit (incluido el que habla
    con Supabase) corre en el servidor. El navegador solo recibe la página, así
    que la clave nunca sale de ahí.
-2. **La clave pública no aporta seguridad acá.** La app no tiene login: el nombre de jugador es un texto que
-   cualquiera puede escribir. Con la clave pública, las políticas de RLS
-   tendrían que dejar que `anon` lea y escriba todo, y como esa clave es
-   pública, cualquiera podría usarla desde afuera de la app para leer o borrar
-   tus partidas. Con la clave secreta, `anon` no tiene ningún permiso, y la
-   única puerta de entrada es la app, que filtra por jugador.
+2. **El login no es de Supabase.** Entrás con Google (`st.login`) o con
+   Lichess, y quien verifica la sesión es el servidor de Streamlit, no
+   Supabase. Por eso el RLS no puede filtrar por "usuario logueado"
+   (`auth.uid()` estaría vacío). Con la clave pública habría que dejar que
+   `anon` lea y escriba todo, y como esa clave es pública, cualquiera podría
+   usarla desde afuera de la app. Con la clave secreta, `anon` no tiene ningún
+   permiso, y la única puerta de entrada es la app, que filtra todo por el
+   jugador de la sesión.
 3. **Dónde vive la clave:** solo en `.streamlit/secrets.toml` (que está en el
    `.gitignore`) o en los *Secrets* de Streamlit Cloud.
 
-Ojo: el nombre de jugador **separa** las partidas, pero no es una contraseña.
-Quien escriba tu nombre en la app ve tus estadísticas. Para algo privado de
-verdad haría falta login (por ejemplo, Supabase Auth).
+El login (Google o Lichess) está explicado en [`docs/LOGIN.md`](../docs/LOGIN.md).
+Sin sesión iniciada se juega como invitado y no se escribe nada en la base.
 
 ## 3. Configurar las credenciales
 
@@ -73,12 +86,15 @@ variables de entorno `SUPABASE_URL` y `SUPABASE_CLAVE`.
 ## 4. Subir lo que ya tenías
 
 ```bash
-python subir_a_supabase.py --jugador "Tomás"
+python subir_a_supabase.py --jugador "mantarraya"
 ```
 
 - **Qué sube:** `datos/partidas.pgn`, `datos/chesscom.pgn` y la caché `datos/evaluaciones.parquet`.
 - **De quién quedan:** cada partida va al jugador que dice su encabezado `Jugador`. Las viejas, que no lo tienen, van a `--jugador`.
 - **Sin duplicar:** se puede correr varias veces y no duplica nada.
+
+Esto deja las partidas a nombre del jugador viejo "mantarraya". Para pasarlas a
+tu cuenta de Google, ver la sección 5 de [`docs/LOGIN.md`](../docs/LOGIN.md).
 
 ## 5. Si Supabase falla
 

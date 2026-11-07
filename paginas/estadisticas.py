@@ -1,9 +1,9 @@
 # Página "Mis estadísticas": cómo jugás, a partir de tus partidas guardadas.
 #
 # Aparece en el menú lateral gracias a app.py (st.navigation).
-# Los datos salen de src/datos.py (partidas de MiniMate y de Chess.com), de
-# Supabase si hay credenciales o de los archivos de datos/ si no. Siempre
-# solo las del jugador de la sesión.
+# Los datos salen de src/datos.py (partidas de MiniMate, Chess.com y Lichess),
+# de Supabase si hay credenciales o de los archivos de datos/ si no. Siempre
+# solo las del jugador con la sesión iniciada: sin sesión, no hay estadísticas.
 
 import chess
 import chess.svg
@@ -12,7 +12,7 @@ import streamlit as st
 
 from src import base_de_datos
 from src.datos import FASES, cargar_todo, carpeta_datos, fase_de_la_derrota
-from src.jugador import pedir_nombre
+from src.panel_cuenta import barra_lateral, botones_de_inicio, preparar_sesion, seccion_cuentas
 from src.motor import mejor_jugada
 
 st.set_page_config(page_title="Mis estadísticas · MiniMate", page_icon="📊")
@@ -24,10 +24,10 @@ COLOR_SERIE = "#2a78d6"
 # ttl=300: como mucho cada 5 minutos se vuelve a leer (por ejemplo, si
 # importaste partidas de Chess.com desde la terminal).
 @st.cache_data(show_spinner="Leyendo tus partidas...", ttl=300)
-def cargar(jugador, firma):
-    """Lee las partidas del jugador. 'firma' hace que la caché se renueve
-    cuando hay datos nuevos (ver firma_de)."""
-    return cargar_todo(jugador=jugador)
+def cargar(clave_jugador, jugador_id, firma):
+    """Lee las partidas del jugador (y solo las suyas). 'firma' hace que la
+    caché se renueve cuando hay datos nuevos (ver firma_de)."""
+    return cargar_todo(jugador=clave_jugador, jugador_id=jugador_id)
 
 
 def firma_de(carpeta):
@@ -46,17 +46,23 @@ def porcentaje(parte, total):
     return f"{100 * parte / total:.0f}%" if total else "—"
 
 
+jugador = preparar_sesion()
+barra_lateral()
 st.title("📊 Mis estadísticas")
 
-# Las estadísticas son de un jugador: si todavía no dijiste quién sos, primero eso.
-if not st.session_state.get("jugador"):
-    pedir_nombre()
+# Las estadísticas son tuyas: sin sesión iniciada no hay nada que mostrar.
+if jugador is None:
+    st.info("**Iniciá sesión para ver tus estadísticas.** Como invitado podés jugar, "
+            "pero las partidas no se guardan.")
+    botones_de_inicio("estadisticas")
     st.stop()
-jugador = st.session_state.jugador
-st.caption(f"👤 Partidas de **{jugador}**")
+
+# Cuentas de Chess.com y Lichess: vincularlas e importar partidas.
+with st.expander("🔗 Mis cuentas de ajedrez e importar partidas"):
+    seccion_cuentas(jugador)
 
 try:
-    partidas, jugadas = cargar(jugador, firma_de(carpeta_datos()))
+    partidas, jugadas = cargar(jugador["clave"], jugador["id"], firma_de(carpeta_datos()))
 except base_de_datos.ErrorBaseDeDatos as error:
     st.error(f"No se pudieron leer tus partidas de la base de datos ({error}). "
              "Revisá la conexión y volvé a cargar la página.")
@@ -70,8 +76,8 @@ if partidas.empty:
         "**Cómo empezar:**\n"
         "1. Jugá contra MiniMate en la página **Jugar**. Cada partida que "
         f"termina (o abandonás) se guarda sola {donde}.\n"
-        "2. Opcional: importá tus partidas de Chess.com con\n"
-        f"   `python importar_chesscom.py --usuario TU_USUARIO --jugador \"{jugador}\" --evaluar`.")
+        "2. Opcional: vinculá tu cuenta de Chess.com o Lichess e importá tus "
+        "partidas (arriba, en «Mis cuentas de ajedrez»).")
     if not base_de_datos.hay_supabase():
         st.caption("Sin base de datos, en Streamlit Cloud los archivos se borran al "
                    "reiniciar la app: conviene correr MiniMate en tu compu.")
@@ -79,7 +85,7 @@ if partidas.empty:
 
 # Filtro por origen (MiniMate / Chess.com), arriba de todo.
 origenes = sorted(partidas["origen"].unique())
-nombres = {"minimate": "MiniMate", "chesscom": "Chess.com"}
+nombres = {"minimate": "MiniMate", "chesscom": "Chess.com", "lichess": "Lichess"}
 elegidos = st.multiselect("Partidas de", origenes, default=origenes,
                           format_func=lambda o: nombres.get(o, o))
 partidas = partidas[partidas["origen"].isin(elegidos)]
@@ -111,9 +117,8 @@ col4.metric("Piezas colgadas", f"{colgadas_por_partida.mean():.1f}",
 sin_evaluar = mias["perdida"].isna().mean() if len(mias) else 0
 if sin_evaluar > 0.05:
     st.caption(f"⚠ El {sin_evaluar:.0%} de tus jugadas todavía no tiene evaluación, así que los "
-               "errores y las fases están incompletos. Corré "
-               f"`python importar_chesscom.py --sin-bajar --jugador \"{jugador}\" --evaluar` "
-               "para calcularlas.")
+               "errores y las fases están incompletos. Tocá «Actualizar» en «Mis cuentas "
+               "de ajedrez» para que MiniMate las analice.")
 
 # --- ¿En qué fase pierdo? -------------------------------------------------------
 st.subheader("¿En qué fase pierdo la partida?")

@@ -1,87 +1,36 @@
-# Baja todas tus partidas de Chess.com y las guarda:
-# - en Supabase, si hay credenciales (ver src/base_de_datos.py);
+# Baja tus partidas de Chess.com y las guarda:
+# - en Supabase, si hay credenciales: SOLO si la cuenta está vinculada y
+#   verificada en la app (Mis estadísticas -> Mis cuentas de ajedrez), y van
+#   al jugador dueño de esa cuenta;
 # - si no, en datos/chesscom.pgn.
+# (Desde la app también se puede importar, con el botón "Actualizar".)
 #
-# Usa la API pública de Chess.com (sin claves ni login):
-#   https://api.chess.com/pub/player/<usuario>/games/archives
-#       -> la lista de "archivos mensuales" (uno por cada mes en que jugaste)
-#   https://api.chess.com/pub/player/<usuario>/games/2026/11
-#       -> las partidas de ese mes, cada una con su PGN
-# Chess.com pide que cada programa se identifique con un User-Agent propio.
+# Usa la API pública de Chess.com (sin claves ni login), ver src/chesscom.py.
 #
-# Uso (--jugador es tu nombre en MiniMate; con Supabase es obligatorio):
-#   python importar_chesscom.py --usuario TU_USUARIO --jugador "Tomás"
-#   python importar_chesscom.py --usuario TU_USUARIO --jugador "Tomás" --meses 3
-#   python importar_chesscom.py --sin-bajar --jugador "Tomás" --evaluar   (evaluar con MiniMate)
+# Uso:
+#   python importar_chesscom.py --usuario TU_USUARIO
+#   python importar_chesscom.py --usuario TU_USUARIO --meses 3     (solo los últimos 3 meses)
+#   python importar_chesscom.py --usuario TU_USUARIO --sin-bajar --evaluar   (evaluar con MiniMate)
 #
 # Se puede correr varias veces: las partidas que ya estaban no se duplican
 # (se reconocen por su link).
 
 import argparse
 import io
-import json
 import re
 import sys
 import time
-import urllib.error
-import urllib.request
-from pathlib import Path
 
 import chess.pgn
 
-from src import base_de_datos
-from src.datos import (ARCHIVO_CHESSCOM, CacheEvaluaciones, CacheSupabase, carpeta_datos,
-                       filas_para_base, leer_pgn)
-from src.guardado import subir_partidas
-from src.jugador import clave_del_nombre, normalizar_nombre
+from src import base_de_datos, importar as importacion
+from src.chesscom import (URL_ARCHIVOS, USER_AGENT, UsuarioNoEncontrado,  # noqa: F401
+                          bajar_partidas, pedir_json, perfil)
+from src.datos import ARCHIVO_CHESSCOM, CacheEvaluaciones, carpeta_datos, leer_pgn
+from src.jugador import normalizar_nombre
 
 # Tu usuario de Chess.com (o pasalo con --usuario).
 USUARIO = "TU_USUARIO"
-
-URL_ARCHIVOS = "https://api.chess.com/pub/player/{usuario}/games/archives"
-USER_AGENT = "MiniMate/1.0 (bot de ajedrez educativo; https://github.com/cuervotomas06/minimate)"
-
-
-class UsuarioNoEncontrado(Exception):
-    pass
-
-
-def pedir_json(url, intentos=3):
-    """Pide una URL de la API y devuelve el JSON. Si Chess.com dice "pará un
-    poco" (error 429), espera y vuelve a probar."""
-    pedido = urllib.request.Request(url, headers={"User-Agent": USER_AGENT,
-                                                  "Accept": "application/json"})
-    for intento in range(intentos):
-        try:
-            with urllib.request.urlopen(pedido, timeout=30) as respuesta:
-                return json.loads(respuesta.read().decode("utf-8"))
-        except urllib.error.HTTPError as error:
-            if error.code == 404:
-                raise UsuarioNoEncontrado(url) from error
-            if error.code == 429 and intento < intentos - 1:
-                time.sleep(5 * (intento + 1))
-                continue
-            raise
-    raise RuntimeError(f"No se pudo leer {url}")
-
-
-def bajar_partidas(usuario, meses=None, pedir=pedir_json, al_avanzar=None):
-    """Lista de textos PGN de tus partidas (solo ajedrez normal, sin variantes).
-    meses: si se pasa, solo los últimos N meses.
-    pedir: la función que hace los pedidos (los tests le pasan una falsa)."""
-    archivos = pedir(URL_ARCHIVOS.format(usuario=usuario.lower()))["archives"]
-    if meses is not None:
-        archivos = archivos[-meses:]
-    pgns = []
-    for numero, url in enumerate(archivos, start=1):
-        for partida in pedir(url).get("games", []):
-            # rules = "chess" es el ajedrez normal (no Chess960, bughouse, etc.).
-            if partida.get("rules") == "chess" and partida.get("pgn"):
-                pgns.append(partida["pgn"])
-        if al_avanzar is not None:
-            al_avanzar(numero, len(archivos))
-        time.sleep(0.2)  # sin apuro: de a un pedido por vez, como pide Chess.com
-    return pgns
 
 
 def marcar(pgn, usuario, jugador=None):
@@ -121,38 +70,14 @@ def importar(usuario, ruta, meses=None, pedir=pedir_json, al_avanzar=None, jugad
     return len(partidas) - antes, len(partidas)
 
 
-def importar_a_supabase(usuario, jugador, meses=None, pedir=pedir_json, al_avanzar=None):
-    """Baja las partidas y sube a Supabase las que el jugador todavía no tiene.
-    Devuelve (nuevas, repetidas)."""
-    nombre = normalizar_nombre(jugador)
-    jugador_id = base_de_datos.id_del_jugador(nombre, clave_del_nombre(nombre))
-    # Las que ya están no se vuelven a analizar (y la base igual no las duplica).
-    ya = {(clave_del_nombre(nombre), c)
-          for c in base_de_datos.claves_guardadas(jugador_id, "chesscom")}
-    pgns = [marcar(pgn, usuario, nombre) for pgn in bajar_partidas(usuario, meses, pedir, al_avanzar)]
-    if not pgns:
-        return 0, 0
-    return subir_partidas("\n\n".join(pgns), nombre, origen="chesscom", ya_guardadas=ya)
-
-
-def evaluar_en_supabase(jugador, al_avanzar=None):
-    """Evalúa con MiniMate las partidas de Chess.com del jugador que tienen
-    jugadas sin evaluación, y actualiza sus jugadas en Supabase. La caché de
-    evaluaciones también queda en Supabase. Devuelve cuántas partidas actualizó."""
-    nombre = normalizar_nombre(jugador)
-    jugador_id = base_de_datos.id_del_jugador(nombre, clave_del_nombre(nombre))
-    pendientes = base_de_datos.partidas_sin_evaluar(jugador_id)
-    cache = CacheSupabase()
-    for numero, (partida_id, pgn) in enumerate(pendientes, start=1):
-        partidas, jugadas = leer_pgn(pgn, origen="chesscom", evaluar=True, cache=cache,
-                                     con_pgn=True)
-        for _, filas_jugadas in filas_para_base(partidas, jugadas):
-            base_de_datos.actualizar_jugadas(
-                [{**fila, "partida_id": partida_id} for fila in filas_jugadas])
-        if al_avanzar is not None:
-            al_avanzar(numero, len(pendientes))
-    cache.guardar()
-    return len(pendientes)
+def cuenta_vinculada(usuario, pedir=None):
+    """La cuenta de Chess.com vinculada y verificada en la app, o None.
+    Se busca por el player_id (no cambia aunque cambies de usuario)."""
+    datos = perfil(usuario, pedir)
+    cuenta = base_de_datos.buscar_cuenta("chesscom", str(datos["player_id"]))
+    if cuenta is None or not cuenta.get("verificado"):
+        return None
+    return cuenta
 
 
 def main():
@@ -165,7 +90,7 @@ def main():
     parser.add_argument("--sin-bajar", action="store_true",
                         help="no bajar nada (por ejemplo, para solo --evaluar)")
     parser.add_argument("--jugador", default=None,
-                        help="tu nombre en MiniMate (con Supabase es obligatorio)")
+                        help="(sin Supabase) tu nombre, para el encabezado Jugador")
     args = parser.parse_args()
 
     if base_de_datos.hay_supabase():
@@ -200,24 +125,26 @@ def main():
 
 
 def main_supabase(args):
-    """Lo mismo que main(), pero leyendo y escribiendo en Supabase."""
-    if not args.jugador:
-        sys.exit('Con Supabase falta tu nombre en MiniMate: --jugador "Tomás"')
+    """Con Supabase: solo cuentas vinculadas y verificadas en la app."""
+    if args.usuario == "TU_USUARIO":
+        sys.exit("Falta tu usuario: python importar_chesscom.py --usuario TU_USUARIO "
+                 "(o cambiá USUARIO al principio de este archivo).")
     try:
+        cuenta = cuenta_vinculada(args.usuario)
+        if cuenta is None:
+            sys.exit(f"La cuenta «{args.usuario}» no está vinculada y verificada en MiniMate. "
+                     "Vinculala desde la app: Mis estadísticas -> Mis cuentas de ajedrez.")
         if not args.sin_bajar:
-            if args.usuario == "TU_USUARIO":
-                sys.exit("Falta tu usuario: python importar_chesscom.py --usuario TU_USUARIO "
-                         "(o cambiá USUARIO al principio de este archivo).")
             print(f"Bajando las partidas de {args.usuario} y subiéndolas a Supabase...")
-            nuevas, repetidas = importar_a_supabase(
-                args.usuario, args.jugador, args.meses,
-                al_avanzar=lambda hechos, todos: print(f"  mes {hechos}/{todos}", end="\r"))
+            nuevas, repetidas = importacion.importar_cuenta(
+                cuenta, args.meses, maximo=None, evaluar=False,
+                al_avanzar=lambda hechas, todas: print(f"  partida {hechas}/{todas}", end="\r"))
             print(f"\n{nuevas} partidas nuevas, {repetidas} ya estaban.")
         if args.evaluar:
             print("Evaluando con MiniMate las jugadas sin evaluación (la caché queda en Supabase)...")
             inicio = time.time()
-            cantidad = evaluar_en_supabase(
-                args.jugador,
+            cantidad = importacion.evaluar_pendientes(
+                cuenta["jugador_id"], "chesscom",
                 al_avanzar=lambda hechas, todas: print(
                     f"  partida {hechas}/{todas} ({time.time() - inicio:.0f} s)", end="\r"))
             print(f"\nListo: {cantidad} partidas actualizadas.")

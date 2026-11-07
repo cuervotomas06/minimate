@@ -124,6 +124,51 @@ def id_del_jugador(nombre, clave):
     return filas[0]["id"]
 
 
+def buscar_jugador(clave):
+    """Id del jugador con esa clave, o None (no lo crea)."""
+    filas = ejecutar(cliente().table("jugadores").select("id").eq("clave", clave))
+    return filas[0]["id"] if filas else None
+
+
+def listar_jugadores():
+    """Todos los jugadores (para el script de migración): id, nombre, clave."""
+    return todas_las_filas(lambda: cliente().table("jugadores").select("id,nombre,clave")
+                           .order("clave"))
+
+
+def fusionar_jugadores(desde, hacia):
+    """Pasa partidas y cuentas de un jugador a otro y borra el primero (ver
+    fusionar_jugadores en migracion_01_cuentas.sql). Devuelve cuántas movió."""
+    return ejecutar(cliente().rpc("fusionar_jugadores", {"p_desde": desde, "p_hacia": hacia}))
+
+
+# ---------------------------------------------------------------------------
+# Cuentas vinculadas (Google, Lichess, Chess.com)
+# ---------------------------------------------------------------------------
+
+def buscar_cuenta(proveedor, id_externo):
+    """La fila de la cuenta, o None si nadie la vinculó."""
+    filas = ejecutar(cliente().table("cuentas").select("*")
+                     .eq("proveedor", proveedor).eq("id_externo", str(id_externo)))
+    return filas[0] if filas else None
+
+
+def crear_cuenta(jugador_id, proveedor, id_externo, usuario, verificado=True):
+    """Vincula una cuenta externa a un jugador. Si la cuenta ya existía (de
+    este u otro jugador) no la toca: devuelve la fila que quedó, para que
+    quien llama vea de quién es."""
+    ejecutar(cliente().table("cuentas").upsert(
+        {"jugador_id": jugador_id, "proveedor": proveedor, "id_externo": str(id_externo),
+         "usuario": usuario, "verificado": verificado},
+        on_conflict="proveedor,id_externo", ignore_duplicates=True))
+    return buscar_cuenta(proveedor, id_externo)
+
+
+def cuentas_del_jugador(jugador_id):
+    return ejecutar(cliente().table("cuentas").select("*").eq("jugador_id", jugador_id)
+                    .order("proveedor"))
+
+
 # ---------------------------------------------------------------------------
 # Partidas y jugadas
 # ---------------------------------------------------------------------------

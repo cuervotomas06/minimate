@@ -90,7 +90,8 @@ def time_control(nombre_reloj):
 
 
 def armar_pgn(tablero, color_humano, nivel, reloj, relojes=None, evaluaciones=None,
-              perdio_por_tiempo=None, abandono=False, fecha=None, jugador=None):
+              perdio_por_tiempo=None, abandono=False, fecha=None, jugador=None,
+              clave_jugador=None):
     """Texto PGN de la partida.
 
     tablero: la partida (con todas sus jugadas).
@@ -100,7 +101,9 @@ def armar_pgn(tablero, color_humano, nivel, reloj, relojes=None, evaluaciones=No
         cada jugada (None donde no hay dato). Se escribe como [%clk].
     evaluaciones: {cantidad de jugadas: valor} (0 = posición inicial). Se
         escribe como [%eval] después de cada jugada.
-    jugador: nombre de quien jugó (encabezado "Jugador").
+    jugador: nombre visible de quien jugó (va en White o Black).
+    clave_jugador: quién es en MiniMate (encabezado "Jugador"), por ejemplo
+        "google:1234...". Si no se pasa, se usa el nombre.
     """
     fecha = fecha or datetime.now()
     relojes = relojes or []
@@ -128,8 +131,8 @@ def armar_pgn(tablero, color_humano, nivel, reloj, relojes=None, evaluaciones=No
     partida.headers["Nivel"] = nivel
     partida.headers["Reloj"] = reloj
     partida.headers["Terminacion"] = terminacion
-    if jugador:
-        partida.headers["Jugador"] = normalizar_nombre(jugador)
+    if clave_jugador or jugador:
+        partida.headers["Jugador"] = clave_jugador or normalizar_nombre(jugador)
 
     # La evaluación de la posición inicial va como comentario de la partida.
     if evaluaciones.get(0) is not None:
@@ -164,12 +167,16 @@ def nombre_de_archivo(fecha=None):
 
 def guardar_partida(pgn, jugador=None):
     """Guarda la partida donde corresponda y devuelve dónde quedó:
-    - "Supabase" si hay credenciales de Supabase;
+    - "Supabase" si hay credenciales de Supabase (a nombre de jugador["id"]);
     - la ruta de datos/partidas.pgn si no.
+    jugador: el de la sesión iniciada, {"id", "clave", "nombre"} (ver
+        src/cuentas.py). Sin sesión (invitado) no se guarda nada en la base.
     Si Supabase falla (sin internet, error) lanza base_de_datos.ErrorBaseDeDatos:
     la app avisa y ofrece descargar el PGN."""
     if base_de_datos.hay_supabase():
-        subir_partidas(pgn, jugador)
+        if not jugador or not jugador.get("id"):
+            raise ValueError("Para guardar en la base hace falta un jugador con sesión iniciada.")
+        subir_partidas(pgn, jugador_id=jugador["id"])
         return "Supabase"
     return guardar_en_archivo(pgn)
 
@@ -189,15 +196,19 @@ def guardar_en_archivo(pgn):
 
 
 def subir_partidas(pgn, jugador=None, origen=None, cache=None, ya_guardadas=None,
-                   al_avanzar=None, jugador_si_falta=None):
+                   al_avanzar=None, jugador_si_falta=None, jugador_id=None, evaluar=False):
     """Sube a Supabase todas las partidas de un texto PGN. Devuelve
     (nuevas, repetidas). Las que ya estaban no se duplican.
 
-    jugador: a quién pertenecen (todas). Si es None, se usa el encabezado
-        "Jugador" de cada partida, y si no lo tiene, jugador_si_falta.
+    jugador_id: id del jugador dueño de TODAS las partidas (lo normal con
+        cuentas: el de la sesión iniciada o el dueño de la cuenta vinculada).
+    jugador: (para partidas viejas, por nombre) a quién pertenecen. Si es None,
+        se usa el encabezado "Jugador" de cada partida, y si no, jugador_si_falta.
+    evaluar: si es True, las posiciones sin evaluación se calculan con MiniMate.
     cache: de dónde sacar evaluaciones que falten (por defecto ninguna).
-    ya_guardadas: {(clave del jugador, clave de la partida)} ya subidas, para
-        no volver a analizarlas (si no se pasa, la base igual las ignora).
+    ya_guardadas: {(jugador, clave de la partida)} ya subidas, para no volver
+        a analizarlas (jugador = jugador_id, o la clave del nombre). Si no se
+        pasa, la base igual las ignora.
     """
     import io
     cache = cache if cache is not None else CacheVacia()
@@ -211,16 +222,21 @@ def subir_partidas(pgn, jugador=None, origen=None, cache=None, ya_guardadas=None
         juegos.append(juego)
 
     for numero, juego in enumerate(juegos, start=1):
-        nombre = normalizar_nombre(jugador or juego.headers.get("Jugador") or jugador_si_falta)
-        if not nombre:
-            raise ValueError("La partida no dice de qué jugador es: pasá jugador=...")
-        clave_jugador = clave_del_nombre(nombre)
+        if jugador_id is not None:
+            clave_jugador = jugador_id
+            ids[clave_jugador] = jugador_id
+        else:
+            nombre = normalizar_nombre(jugador or juego.headers.get("Jugador") or jugador_si_falta)
+            if not nombre:
+                raise ValueError("La partida no dice de qué jugador es: pasá jugador_id=...")
+            clave_jugador = clave_del_nombre(nombre)
+            if clave_jugador not in ids:
+                ids[clave_jugador] = base_de_datos.id_del_jugador(nombre, clave_jugador)
         if (clave_jugador, clave_de_juego(juego)) in ya_guardadas:
             repetidas += 1
         else:
-            if clave_jugador not in ids:
-                ids[clave_jugador] = base_de_datos.id_del_jugador(nombre, clave_jugador)
-            partidas, jugadas = leer_pgn(str(juego), origen=origen, cache=cache, con_pgn=True)
+            partidas, jugadas = leer_pgn(str(juego), origen=origen, cache=cache, con_pgn=True,
+                                         evaluar=evaluar)
             for partida, sus_jugadas in filas_para_base(partidas, jugadas):
                 if base_de_datos.guardar_partida(ids[clave_jugador], partida, sus_jugadas):
                     nuevas += 1

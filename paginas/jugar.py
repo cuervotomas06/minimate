@@ -26,7 +26,7 @@ from src.evaluacion import VALOR_MATE
 from src.base_de_datos import resumir_error
 from src.guardado import (armar_pgn, guardar_en_archivo, guardar_partida,
                           nombre_de_archivo)
-from src.jugador import pedir_nombre
+from src.panel_cuenta import barra_lateral, jugador_actual, preparar_sesion
 from src.motor import mejor_jugada
 from src.niveles import NIVEL_POR_DEFECTO, NIVELES, describir
 from src.reloj import CONTROL_POR_DEFECTO, CONTROLES, profundidad_segun_reloj
@@ -113,6 +113,7 @@ def valores_iniciales():
         "ruta_guardado": None,         # dónde se guardó: "Supabase" o la ruta (o None)
         "error_guardado": None,        # si falló Supabase: el error, para mostrarlo
         "respaldo_local": None,        # si falló Supabase: la copia en datos/partidas.pgn
+        "como_invitado": False,        # terminó sin sesión iniciada: no se guardó
         "analisis_partida": None,      # análisis de la partida (lo usan el PGN y la revisión)
         "revision": None,              # lista de análisis (None = no estás revisando)
         "evaluaciones_revision": {},   # {cantidad de jugadas: valor} de cada posición
@@ -460,6 +461,11 @@ def guardar_si_termino(tablero):
     st.session_state.partida_guardada = True
     if not ya_jugo(tablero, color_humano()):
         return
+    error_sesion = None
+    try:
+        jugador = jugador_actual()     # None = invitado (sin sesión iniciada)
+    except Exception as error:  # noqa: BLE001  (sin conexión con la base: se maneja abajo)
+        jugador, error_sesion = None, error
     analisis = analizar_partida(tablero, "Guardando la partida: analizando tus jugadas...")
     if st.session_state.pgn_partida is None:
         st.session_state.pgn_partida = armar_pgn(
@@ -469,10 +475,17 @@ def guardar_si_termino(tablero):
             evaluaciones=analisis["evaluaciones"],
             perdio_por_tiempo=st.session_state.perdio_por_tiempo,
             abandono=st.session_state.abandono,
-            jugador=st.session_state.jugador)
+            jugador=jugador["nombre"] if jugador else None,
+            clave_jugador=jugador["clave"] if jugador else None)
     pgn = st.session_state.pgn_partida
+    if jugador is None and error_sesion is None:
+        # Invitado: no se guarda nada (queda el botón de descarga).
+        st.session_state.como_invitado = True
+        return
     try:
-        st.session_state.ruta_guardado = str(guardar_partida(pgn, st.session_state.jugador))
+        if error_sesion is not None:
+            raise error_sesion   # no sabemos quién sos porque falló la base
+        st.session_state.ruta_guardado = str(guardar_partida(pgn, jugador))
         st.session_state.error_guardado = None
         # Avisamos a la página de estadísticas que hay datos nuevos.
         st.session_state.version_datos = st.session_state.get("version_datos", 0) + 1
@@ -493,13 +506,6 @@ def reintentar_guardado():
     """Botón "Reintentar": vuelve a probar en la próxima corrida."""
     inicializar_estado()  # ver jugar_humano
     st.session_state.partida_guardada = False
-
-
-def cambiar_de_jugador():
-    """Botón "Cambiar de jugador": olvida el nombre y empieza de cero."""
-    inicializar_estado()  # ver jugar_humano
-    st.session_state.jugador = None
-    nueva_partida()
 
 
 def historial_san(tablero):
@@ -648,11 +654,9 @@ def texto_jugada(analisis):
 inicializar_estado()
 tablero = st.session_state.tablero
 
-# Antes de jugar: ¿cómo te llamás? (para separar las partidas de cada persona).
-if not st.session_state.get("jugador"):
-    st.title("♟ MiniMate")
-    pedir_nombre()
-    st.stop()
+# ¿Quién juega? Con sesión iniciada (Google o Lichess) las partidas se guardan;
+# sin sesión se juega como invitado. (También procesa la vuelta de Lichess.)
+jugador = preparar_sesion()
 
 # Un cambio que esperaba confirmación, pero la partida ya terminó (por ejemplo,
 # te dieron mate mientras tanto): ya no hace falta preguntar, se aplica.
@@ -683,12 +687,13 @@ if st.session_state.nueva_despues is not None:
 # Barra lateral
 # ---------------------------------------------------------------------------
 
+# Arriba: tu cuenta (nombre y foto, o los botones para iniciar sesión).
+# Durante una partida no se puede entrar ni salir: la página se recarga y la
+# partida se perdería.
+barra_lateral(bloquear=partida_en_curso())
+
 with st.sidebar:
     st.header("Opciones")
-    st.markdown(f"👤 Jugando como **{st.session_state.jugador}**")
-    st.button("Cambiar de jugador", key="cambiar_jugador", on_click=cambiar_de_jugador,
-              disabled=partida_en_curso(),
-              help="Terminá o abandoná la partida primero." if partida_en_curso() else None)
     # Cambiar de color arranca una partida nueva (on_change).
     st.radio("Jugás con", ["Blancas", "Negras"], key="color", on_change=al_cambiar_color)
     # Dificultad: de menos a más Elo. Se puede cambiar en medio de la partida.
@@ -724,6 +729,9 @@ asegurar_reloj()
 # ---------------------------------------------------------------------------
 
 st.title("♟ MiniMate")
+if jugador is None:
+    st.info("Estás jugando como **invitado**: tus partidas no se guardan y no tenés "
+            "estadísticas. Iniciá sesión (en la barra lateral) para guardarlas.")
 
 columna_tablero, columna_panel = st.columns([3, 2])
 
@@ -787,13 +795,17 @@ with columna_panel:
             # Abandonar: la partida termina (perdida) y se guarda igual.
             st.button("🏳 Abandonar", key="abandonar", on_click=abandonar,
                       disabled=not ya_jugo(tablero, color_humano()),
-                      help="Termina la partida como perdida y la guarda.")
+                      help="Termina la partida como perdida (y la guarda, si "
+                           "iniciaste sesión).")
 
     # Al terminar, se guarda sola (una vez) y se puede descargar y revisar.
     guardar_si_termino(tablero)
     if partida_terminada(tablero):
         if st.session_state.pgn_partida is not None:
-            if st.session_state.ruta_guardado == "Supabase":
+            if st.session_state.como_invitado:
+                st.warning("Jugaste como invitado: esta partida **no se guardó**. Podés "
+                           "descargarla, o iniciar sesión para guardar las próximas.")
+            elif st.session_state.ruta_guardado == "Supabase":
                 st.caption("💾 Partida guardada en Supabase")
             elif st.session_state.ruta_guardado:
                 st.caption(f"💾 Partida guardada en `{st.session_state.ruta_guardado}`")

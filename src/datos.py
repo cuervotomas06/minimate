@@ -10,8 +10,8 @@
 # - jugadas: una fila por jugada (evaluación antes y después, pérdida, fase,
 #   piezas colgadas...).
 #
-# Lee dos "orígenes": las partidas jugadas en la app (origen "minimate") y las
-# importadas de Chess.com (origen "chesscom", ver importar_chesscom.py).
+# Lee tres "orígenes": las partidas jugadas en la app (origen "minimate") y las
+# importadas de Chess.com ("chesscom") y de Lichess ("lichess").
 # Si hay credenciales de Supabase las lee de la base (src/base_de_datos.py);
 # si no, de los archivos datos/partidas.pgn y datos/chesscom.pgn.
 #
@@ -349,10 +349,20 @@ TERMINACIONES_CHESSCOM = [
 ]
 
 
-def terminacion_de(encabezados):
+def terminacion_de(encabezados, tablero_final=None):
+    """Cómo terminó, en castellano. Lichess pone "Normal" tanto para un mate
+    como para un abandono o unas tablas: ahí miramos la posición final."""
     if encabezados.get("Terminacion"):
         return encabezados["Terminacion"]
     texto = encabezados.get("Termination", "").lower()
+    if texto == "normal" and tablero_final is not None:
+        if tablero_final.is_checkmate():
+            return "jaque mate"
+        if tablero_final.is_stalemate():
+            return "ahogado"
+        if tablero_final.is_insufficient_material():
+            return "material insuficiente"
+        return "tablas" if encabezados.get("Result") == "1/2-1/2" else "abandono"
     for clave, nombre in TERMINACIONES_CHESSCOM:
         if clave in texto:
             return nombre
@@ -387,11 +397,14 @@ def mi_color_de(encabezados, usuario=None):
 
 def clave_de_juego(juego):
     """Texto que identifica una partida, para no guardarla dos veces.
-    Chess.com: su link. MiniMate: un "hash" (resumen corto) de la fecha, los
-    jugadores y las jugadas; la misma partida da siempre el mismo hash."""
+    Chess.com y Lichess: su link. MiniMate: un "hash" (resumen corto) de la
+    fecha, los jugadores y las jugadas; la misma partida da siempre el mismo hash."""
     link = juego.headers.get("Link")
     if link:
         return link
+    sitio = juego.headers.get("Site", "")
+    if sitio.startswith("https://lichess.org/"):
+        return sitio
     partes = [juego.headers.get(nombre, "") for nombre in ("Date", "Time", "White", "Black", "Result")]
     partes += [jugada.uci() for jugada in juego.mainline_moves()]
     return "minimate-" + hashlib.sha1(" ".join(partes).encode("utf-8")).hexdigest()[:20]
@@ -460,8 +473,10 @@ def leer_pgn(fuente, origen=None, usuario=None, evaluar=False, cache=None, al_av
     filas_partidas, filas_jugadas = [], []
     for numero_partida, juego in enumerate(juegos):
         encabezados = juego.headers
+        sitio = encabezados.get("Site", "").lower()
         su_origen = origen or encabezados.get("Origen") or (
-            "chesscom" if "chess.com" in encabezados.get("Site", "").lower() else "minimate")
+            "chesscom" if "chess.com" in sitio else "lichess" if "lichess.org" in sitio
+            else "minimate")
         mi_color = mi_color_de(encabezados, usuario)
         if mi_color is None or juego.errors:
             continue  # no sabemos quién soy, o el PGN está roto: la salteamos
@@ -512,7 +527,9 @@ def leer_pgn(fuente, origen=None, usuario=None, evaluar=False, cache=None, al_av
             if numero < 5 and pieza == chess.QUEEN:
                 dama_temprana = True
 
-        if su_origen == "chesscom":
+        if encabezados.get("Opening"):            # Lichess: ECO y nombre
+            eco, apertura = encabezados.get("ECO"), encabezados["Opening"]
+        elif su_origen == "chesscom":
             eco, apertura = apertura_de_chesscom(encabezados)
         else:
             eco, apertura = clasificar_apertura(sans)
@@ -539,7 +556,7 @@ def leer_pgn(fuente, origen=None, usuario=None, evaluar=False, cache=None, al_av
             "nivel": encabezados.get("Nivel"),
             "reloj": reloj_normalizado(encabezados),
             "resultado": resultado,
-            "terminacion": terminacion_de(encabezados),
+            "terminacion": terminacion_de(encabezados, tableros[-1]),
             "cantidad_jugadas": math.ceil(len(nodos) / 2),
             "eco": eco,
             "apertura": apertura,
@@ -604,14 +621,16 @@ def tablas_vacias():
     return pd.DataFrame(columns=COLUMNAS_PARTIDAS), pd.DataFrame(columns=COLUMNAS_JUGADAS)
 
 
-def cargar_todo(carpeta=None, evaluar=False, al_avanzar=None, jugador=None):
+def cargar_todo(carpeta=None, evaluar=False, al_avanzar=None, jugador=None, jugador_id=None):
     """Lee las dos fuentes (MiniMate y Chess.com) y las junta.
     La columna "origen" dice de dónde viene cada partida.
-    jugador: de quién son las partidas (con Supabase es obligatorio).
+    jugador: con archivos, la clave del jugador (encabezado "Jugador").
+    jugador_id: con Supabase, el id del jugador (obligatorio): nunca se leen
+        partidas de otro.
     Si hay Supabase (y no se pasa una carpeta) lee de la base; si no, de los
     archivos de datos/."""
     if carpeta is None and base_de_datos.hay_supabase():
-        return leer_de_supabase(jugador)
+        return leer_de_supabase(jugador_id)
     carpeta = Path(carpeta) if carpeta is not None else carpeta_datos()
     cache = CacheEvaluaciones(carpeta / ARCHIVO_CACHE)
     tablas = []
@@ -664,12 +683,10 @@ def filas_para_base(partidas, jugadas):
     return resultado
 
 
-def leer_de_supabase(jugador):
+def leer_de_supabase(jugador_id):
     """(partidas, jugadas) del jugador, leídas de Supabase."""
-    if not jugador:
-        raise ValueError("Con Supabase hace falta saber de qué jugador leer.")
-    from src.jugador import normalizar_nombre
-    jugador_id = base_de_datos.id_del_jugador(normalizar_nombre(jugador), clave_del_nombre(jugador))
+    if not jugador_id:
+        raise ValueError("Con Supabase hace falta saber de qué jugador leer (su id).")
     filas = base_de_datos.leer_partidas(jugador_id)
     if not filas:
         return tablas_vacias()

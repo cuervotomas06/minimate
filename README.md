@@ -17,7 +17,8 @@ Un bot de ajedrez escrito desde cero en Python, con una app web para jugarle, ve
 - **Barra de evaluación** al costado del tablero, como en las páginas de ajedrez, con la ventaja en peones (`+1.5`) o el mate (`M3`). Se puede ocultar.
 - **Reloj** opcional: 3+2, 5+3, 10+5 o 15+10. Como en Lichess, cada reloj arranca recién después de la primera jugada de ese jugador. Si al bot le queda poco tiempo, piensa menos.
 - **Revisión de partida**: al terminar, MiniMate analiza tus jugadas, marca imprecisiones, errores y errores graves, y te muestra con una flecha qué tendrías que haber jugado.
-- **Tus partidas como datos**: cada partida se guarda en PGN (con reloj y evaluación por jugada, en el formato de Lichess) y la página **Mis estadísticas** muestra tus patrones: en qué fase perdés, cuántas piezas colgás, tus errores graves recientes. También podés importar tus partidas de Chess.com (`importar_chesscom.py`).
+- **Tus partidas como datos**: cada partida se guarda en PGN (con reloj y evaluación por jugada, en el formato de Lichess) y la página **Mis estadísticas** muestra tus patrones: en qué fase perdés, cuántas piezas colgás, tus errores graves recientes.
+- **Cuentas**: iniciá sesión con Google o con Lichess (sin sesión se juega como invitado y no se guarda nada). Podés vincular tu cuenta de Lichess y la de Chess.com (verificada con un código en tu perfil) e importar tus partidas desde la app. Cada persona ve solo sus datos. Ver [docs/LOGIN.md](docs/LOGIN.md).
 
 ## Cómo funciona por dentro
 
@@ -110,12 +111,19 @@ minimate/
 │   ├── reloj.py            # controles de tiempo y profundidad según el reloj
 │   ├── guardado.py         # PGN de cada partida y dónde se guarda (Supabase o archivo)
 │   ├── base_de_datos.py    # conexión con Supabase (leer y escribir filas)
-│   ├── jugador.py          # nombre del jugador (separa las partidas de cada uno)
+│   ├── jugador.py          # normalizar y comparar nombres
+│   ├── cuentas.py          # quién inició sesión y sus cuentas vinculadas
+│   ├── panel_cuenta.py     # la parte visual: iniciar sesión, vincular, importar
+│   ├── lichess.py          # Lichess: login OAuth2 con PKCE y export de partidas
+│   ├── chesscom.py         # Chess.com: API pública y verificación con código
+│   ├── importar.py         # importar partidas de cuentas vinculadas
 │   ├── datos.py            # partidas -> DataFrames (pandas) para analizarlas
 │   └── componente_tablero/ # tablero interactivo (JavaScript) para Streamlit
 ├── importar_chesscom.py    # baja tus partidas de Chess.com (API pública)
 ├── subir_a_supabase.py     # sube a Supabase las partidas que tenías en datos/
-├── supabase/               # SQL de las tablas y cómo configurar Supabase (LEEME.md)
+├── migrar_jugador.py       # pasa las partidas de un jugador viejo a tu cuenta
+├── supabase/               # SQL de las tablas, migraciones y cómo configurar Supabase
+├── docs/LOGIN.md           # cómo configurar el login con Google y Lichess
 ├── datos/                  # partidas y caché locales, si no usás Supabase (no se sube)
 ├── tests/                  # tests con pytest
 ├── medir_elo.py            # mide el Elo contra Stockfish

@@ -167,7 +167,7 @@ def test_selector_de_nivel_muestra_los_niveles():
     selector = at.select_slider(key="nivel")
     assert list(selector.options) == list(NIVELES)
     assert selector.value == NIVEL_POR_DEFECTO
-    assert "mira" in at.sidebar.caption[0].value  # descripción del nivel
+    assert "Elo" in at.sidebar.caption[0].value   # descripción del nivel
 
 
 def test_cambiar_de_nivel_no_reinicia_la_partida():

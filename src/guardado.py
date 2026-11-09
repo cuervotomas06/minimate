@@ -91,7 +91,7 @@ def time_control(nombre_reloj):
 
 def armar_pgn(tablero, color_humano, nivel, reloj, relojes=None, evaluaciones=None,
               perdio_por_tiempo=None, abandono=False, fecha=None, jugador=None,
-              clave_jugador=None):
+              clave_jugador=None, calidades=None):
     """Texto PGN de la partida.
 
     tablero: la partida (con todas sus jugadas).
@@ -102,6 +102,10 @@ def armar_pgn(tablero, color_humano, nivel, reloj, relojes=None, evaluaciones=No
     evaluaciones: {cantidad de jugadas: valor} (0 = posición inicial). Se
         escribe como [%eval] después de cada jugada.
     jugador: nombre visible de quien jugó (va en White o Black).
+    calidades: {índice de la jugada: "mejor"/"buena"/"imprecisión"/"error"/
+        "error grave"} de tus jugadas. Van como comentario [%calidad mejor] y,
+        las malas, también con su símbolo estándar (?!, ?, ??) que entiende
+        cualquier programa de ajedrez.
     clave_jugador: quién es en MiniMate (encabezado "Jugador"), por ejemplo
         "google:1234...". Si no se pasa, se usa el nombre.
     """
@@ -151,8 +155,20 @@ def armar_pgn(tablero, color_humano, nivel, reloj, relojes=None, evaluaciones=No
         segundos = relojes[cantidad - 1] if cantidad - 1 < len(relojes) else None
         if segundos is not None:
             nodo.set_clock(max(0.0, float(segundos)))
+        calidad = (calidades or {}).get(cantidad - 1)
+        if calidad is not None:
+            nodo.comment = f"{nodo.comment} [%calidad {CALIDAD_EN_PGN[calidad]}]".strip()
+            if calidad in NAG_DE_CALIDAD:
+                nodo.nags.add(NAG_DE_CALIDAD[calidad])
 
     return str(partida)
+
+
+# Calidad de cada jugada en el PGN: [%calidad ...] (sin tildes ni espacios) y
+# los símbolos estándar ("NAG": $6 = ?!, $2 = ?, $4 = ??).
+CALIDAD_EN_PGN = {"mejor": "mejor", "buena": "buena", "imprecisión": "imprecision",
+                  "error": "error", "error grave": "error_grave"}
+NAG_DE_CALIDAD = {"imprecisión": 6, "error": 2, "error grave": 4}
 
 
 def nombre_de_archivo(fecha=None):

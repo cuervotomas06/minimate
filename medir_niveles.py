@@ -23,8 +23,7 @@ from datetime import date
 import chess
 import chess.pgn
 
-from src.motor import mejor_jugada
-from src.niveles import NIVELES
+from src.niveles import NIVELES, crear_buscador
 
 # Aperturas conocidas (pocas jugadas) para que las partidas no sean todas iguales.
 APERTURAS = [
@@ -47,12 +46,17 @@ def jugar(nivel_blancas, nivel_negras, apertura, max_jugadas):
     tablero = chess.Board()
     for san in apertura.split():
         tablero.push_san(san)
+    # Un buscador por bando (cada uno con su tabla de transposiciones).
+    buscadores = {chess.WHITE: crear_buscador(nivel_blancas),
+                  chess.BLACK: crear_buscador(nivel_negras)}
 
     while not tablero.is_game_over(claim_draw=True):
         if tablero.fullmove_number > max_jugadas:
             return "1/2-1/2", f"tablas por límite de {max_jugadas} jugadas", tablero
         nivel = NIVELES[nivel_blancas if tablero.turn == chess.WHITE else nivel_negras]
-        tablero.push(mejor_jugada(tablero, nivel["profundidad"], con_quietud=nivel["quietud"]))
+        resultado = buscadores[tablero.turn].buscar(
+            tablero, tiempo=nivel["tiempo"], profundidad_maxima=nivel["profundidad_maxima"])
+        tablero.push(resultado.jugada)
 
     final = tablero.outcome(claim_draw=True)
     return final.result(), final.termination.name.lower().replace("_", " "), tablero

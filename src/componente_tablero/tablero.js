@@ -63,7 +63,8 @@ let idEnviado = null;
 
 // Ayudas que manda Python (null = no se muestran).
 let barra = null;    // { texto: '+1.5', porcentaje: 61.2 }  (porcentaje blanco)
-let flecha = null;   // 'e2e4': mejor jugada en la revisión
+let flecha = null;   // 'e2e4': mejor jugada (revisión, o tu último error)
+let marca = null;    // { casilla: 'e4', simbolo: '★', tipo: 'mejor' }: calidad de tu jugada
 
 // ---------------------------------------------------------------------------
 // Utilidades
@@ -323,6 +324,30 @@ function centroDeCasilla(casilla) {
     return { x: columna + 0.5, y: 7 - fila + 0.5 };
   }
   return { x: 7 - columna + 0.5, y: fila + 0.5 };
+}
+
+// Iconito de la calidad de tu jugada (como en Chess.com): un circulito de
+// color en la esquina de arriba a la derecha de la casilla de destino.
+function dibujarMarca() {
+  const icono = document.getElementById('marca-calidad');
+  const casillas = document.querySelector('#tablero .board-b72b1');
+  if (!marca || !tablero || !casillas) {
+    icono.hidden = true;
+    return;
+  }
+  const zona = document.getElementById('zona-tablero').getBoundingClientRect();
+  const rect = casillas.getBoundingClientRect();
+  const lado = rect.width / 8;
+  const centro = centroDeCasilla(marca.casilla);     // en casillas (0 a 8)
+  const tamano = Math.max(16, Math.round(lado * 0.42));
+  icono.textContent = marca.simbolo;
+  icono.className = `calidad-${marca.tipo.replace(' ', '-')}`;
+  icono.style.width = icono.style.height = `${tamano}px`;
+  icono.style.fontSize = `${Math.round(tamano * 0.55)}px`;
+  // Esquina de arriba a la derecha de la casilla, un poco afuera.
+  icono.style.left = `${rect.left - zona.left + (centro.x + 0.5) * lado - tamano * 0.75}px`;
+  icono.style.top = `${rect.top - zona.top + (centro.y - 0.5) * lado - tamano * 0.25}px`;
+  icono.hidden = false;
 }
 
 function dibujarFlecha() {
@@ -625,6 +650,7 @@ function ajustarTamano() {
   $('#barra').css('height', `${altoTablero}px`);
   $('.reloj').css('width', `${$('#tablero').outerWidth() + anchoBarra}px`);
   dibujarFlecha();    // cambió el tamaño de las casillas
+  dibujarMarca();
 
   ajustarAltura();    // el iframe tiene que medir lo mismo que el contenido
 }
@@ -686,6 +712,8 @@ function alRecibirDatos(args, tema) {
   if (`${Boolean(barra)}-${Boolean(reloj)}` !== antes) ajustarTamano();
 
   flecha = args.flecha || null;
+  marca = args.marca || null;
+  dibujarMarca();
   dibujarFlecha();
 
   ultima = args.ultima ? { from: args.ultima.slice(0, 2), to: args.ultima.slice(2, 4) } : null;

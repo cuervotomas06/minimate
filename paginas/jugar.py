@@ -27,9 +27,9 @@ from src.base_de_datos import resumir_error
 from src.guardado import (armar_pgn, guardar_en_archivo, guardar_partida,
                           nombre_de_archivo)
 from src.panel_cuenta import barra_lateral, jugador_actual, preparar_sesion
-from src.motor import mejor_jugada
-from src.niveles import NIVEL_POR_DEFECTO, NIVELES, describir
-from src.reloj import CONTROL_POR_DEFECTO, CONTROLES, profundidad_segun_reloj
+from src.analisis import SIMBOLOS_CALIDAD, analizar_jugada
+from src.niveles import NIVEL_POR_DEFECTO, NIVELES, crear_buscador, describir
+from src.reloj import CONTROL_POR_DEFECTO, CONTROLES, tiempo_para_el_bot
 
 st.set_page_config(page_title="MiniMate", page_icon="♟")
 
@@ -115,6 +115,8 @@ def valores_iniciales():
         "respaldo_local": None,        # si falló Supabase: la copia en datos/partidas.pgn
         "como_invitado": False,        # terminó sin sesión iniciada: no se guardó
         "analisis_partida": None,      # análisis de la partida (lo usan el PGN y la revisión)
+        "analisis_vivo": {},           # {índice de tu jugada: análisis}, hecho en vivo
+        "buscador": None,              # (nivel, Buscador): guarda su tabla entre jugadas
         "revision": None,              # lista de análisis (None = no estás revisando)
         "evaluaciones_revision": {},   # {cantidad de jugadas: valor} de cada posición
         "revisar_pedido": False,       # apretaste "Revisar partida"
@@ -403,6 +405,8 @@ def deshacer():
     st.session_state.revision = None
     st.session_state.evaluaciones_revision = {}
     st.session_state.revisar_pedido = False
+    for indice in [i for i in st.session_state.analisis_vivo if i >= len(tablero.move_stack)]:
+        del st.session_state.analisis_vivo[indice]
     st.session_state.mensaje = ""
 
 
@@ -441,7 +445,9 @@ def analizar_partida(tablero, texto):
             progreso.progress(hechas / total, text=f"{texto} {hechas}/{total}")
 
         jugadas_partida = list(tablero.move_stack)
+        # Las jugadas ya analizadas en vivo no se vuelven a analizar.
         revision = revisar_partida(jugadas_partida, color_humano(),
+                                   previos=st.session_state.analisis_vivo,
                                    inicial=tablero.root(), al_avanzar=al_avanzar)
         # Evaluación de CADA posición (para la barra de la revisión y el PGN),
         # toda del mismo análisis. Casi todas salen de la revisión.
@@ -473,6 +479,7 @@ def guardar_si_termino(tablero):
             st.session_state.get("control", CONTROL_POR_DEFECTO),
             relojes=st.session_state.relojes,
             evaluaciones=analisis["evaluaciones"],
+            calidades={a["indice"]: a["calidad"] for a in analisis["revision"]},
             perdio_por_tiempo=st.session_state.perdio_por_tiempo,
             abandono=st.session_state.abandono,
             jugador=jugador["nombre"] if jugador else None,
@@ -506,6 +513,67 @@ def reintentar_guardado():
     """Botón "Reintentar": vuelve a probar en la próxima corrida."""
     inicializar_estado()  # ver jugar_humano
     st.session_state.partida_guardada = False
+
+
+# --- Calidad de tus jugadas en vivo (★ ✓ ?! ? ??) -----------------------------
+
+def mostrar_calidad():
+    return st.session_state.get("mostrar_calidad", True)
+
+
+def color_de_la_jugada(tablero, indice):
+    """Quién hizo la jugada número 'indice' (0 = la primera de la partida)."""
+    primero = tablero.root().turn
+    return primero if indice % 2 == 0 else not primero
+
+
+def ultima_jugada_tuya(tablero):
+    """Índice de tu última jugada, o None si todavía no jugaste."""
+    for indice in range(len(tablero.move_stack) - 1, -1, -1):
+        if color_de_la_jugada(tablero, indice) == color_humano():
+            return indice
+    return None
+
+
+def analizar_ultima_jugada(tablero):
+    """Analiza tu última jugada, si todavía no está analizada: una búsqueda
+    corta (profundidad 2, la misma que la revisión). La hace el bot antes de
+    pensar su respuesta, y el tiempo sale del suyo: no tarda más."""
+    indice = ultima_jugada_tuya(tablero)
+    if indice is None or indice in st.session_state.analisis_vivo:
+        return
+    antes = tablero_en(tablero, indice)
+    st.session_state.analisis_vivo[indice] = analizar_jugada(
+        antes, tablero.move_stack[indice], indice)
+
+
+def analisis_de_indice(indice):
+    """El análisis de una jugada tuya: el de en vivo, o el del final de la partida."""
+    analisis = st.session_state.analisis_vivo.get(indice)
+    if analisis is None and st.session_state.analisis_partida is not None:
+        for revisada in st.session_state.analisis_partida["revision"]:
+            if revisada["indice"] == indice:
+                return revisada
+    return analisis
+
+
+def marca_de(tablero, indice):
+    """Lo que necesita el tablero para dibujar el iconito sobre la casilla."""
+    analisis = analisis_de_indice(indice) if indice is not None else None
+    if analisis is None or not mostrar_calidad():
+        return None
+    destino = tablero.move_stack[indice].to_square
+    return {"casilla": chess.square_name(destino),
+            "simbolo": SIMBOLOS_CALIDAD[analisis["calidad"]], "tipo": analisis["calidad"]}
+
+
+def buscador_del_nivel(nombre):
+    """El Buscador del nivel (uno por partida: guarda lo aprendido entre jugadas)."""
+    guardado = st.session_state.buscador
+    if guardado is None or guardado[0] != nombre:
+        guardado = (nombre, crear_buscador(nombre))
+        st.session_state.buscador = guardado
+    return guardado[1]
 
 
 def historial_san(tablero):
@@ -708,6 +776,8 @@ with st.sidebar:
                  key="control", on_change=al_cambiar_reloj)
     # Para quien prefiere jugar sin "ayudas".
     st.toggle("Mostrar barra de evaluación", value=True, key="mostrar_barra")
+    st.toggle("Mostrar la calidad de mis jugadas", value=True, key="mostrar_calidad",
+              help="★ la mejor · ✓ buena · ?! imprecisión · ? error · ?? error grave")
     st.button("Nueva partida", key="nueva_partida", on_click=pedir_nueva_partida,
               width="stretch")
     # Confirmación (si ya hiciste jugadas en la partida actual).
@@ -754,8 +824,17 @@ with columna_tablero:
             on_change=jugada_del_tablero,
             barra=datos_barra_para(mostrado),
             flecha=flecha,
+            marca=marca_de(tablero, indice - 1) if analisis is not None else None,
         )
     else:
+        # Calidad de tu última jugada: iconito sobre su casilla y, si fue un
+        # error, una flecha verde hacia la que era mejor.
+        ultima = ultima_jugada_tuya(tablero)
+        analisis_ultima = analisis_de_indice(ultima) if ultima is not None else None
+        flecha_error = None
+        if (mostrar_calidad() and analisis_ultima is not None
+                and analisis_ultima["calidad"] in ("error", "error grave")):
+            flecha_error = analisis_ultima["mejor_uci"]
         tablero_interactivo(
             tablero,
             color_humano=color_humano(),
@@ -765,7 +844,14 @@ with columna_tablero:
             on_change=jugada_del_tablero,
             barra=datos_barra_para(tablero),
             reloj=datos_reloj(tablero),
+            marca=marca_de(tablero, ultima),
+            flecha=flecha_error,
         )
+        if flecha_error is not None:
+            nombre = "Error grave" if analisis_ultima["calidad"] == "error grave" else "Error"
+            simbolo = SIMBOLOS_CALIDAD[analisis_ultima["calidad"]]
+            st.caption(f"{simbolo} {nombre}: jugaste {analisis_ultima['san']}; la mejor era "
+                       f"**{analisis_ultima['mejor_san']}** (flecha verde).")
 
 with columna_panel:
     # Estado de la partida (jaque, mate, tablas, tiempo...).
@@ -884,6 +970,12 @@ with columna_panel:
     if not jugadas:
         st.caption("Todavía no hay jugadas.")
     else:
+        # Al lado de cada jugada tuya, su calidad (si está prendido).
+        if mostrar_calidad():
+            for indice in range(len(jugadas)):
+                analisis = analisis_de_indice(indice)
+                if analisis is not None and color_de_la_jugada(tablero, indice) == color_humano():
+                    jugadas[indice] += SIMBOLOS_CALIDAD[analisis["calidad"]]
         lineas = []
         for i in range(0, len(jugadas), 2):
             numero = i // 2 + 1
@@ -902,19 +994,24 @@ with columna_panel:
 
 if not partida_terminada(tablero) and tablero.turn != color_humano():
     bot = tablero.turn
-    profundidad = nivel["profundidad"]
+    tiempo = nivel["tiempo"]
     if hay_reloj():
-        # Si le queda poco tiempo, piensa menos (menos profundidad).
+        # Nunca más de lo que le toca según el reloj: así no pierde por tiempo.
         _, incremento = control_de_tiempo()
-        profundidad = profundidad_segun_reloj(profundidad, nivel["quietud"],
-                                              st.session_state.tiempos[bot], incremento)
+        tiempo = tiempo_para_el_bot(tiempo, st.session_state.tiempos[bot], incremento)
 
     with st.spinner("MiniMate está pensando..."):
         inicio = time.perf_counter()
-        # devolver_valor=True: además de la jugada nos da la evaluación,
-        # que usamos para la barra sin hacer otra búsqueda.
-        jugada, valor = mejor_jugada(tablero, profundidad, con_quietud=nivel["quietud"],
-                                     devolver_valor=True)
+        # Primero, la calidad de tu jugada (búsqueda corta). Su tiempo se
+        # descuenta del que tiene el bot para pensar: en total no tarda más.
+        if mostrar_calidad():
+            analizar_ultima_jugada(tablero)
+        resto = max(0.01, tiempo - (time.perf_counter() - inicio))
+        # Piensa hasta 'resto' segundos (profundización iterativa) y devuelve
+        # la jugada y la evaluación, que usamos para la barra.
+        resultado = buscador_del_nivel(nombre_nivel).buscar(
+            tablero, tiempo=resto, profundidad_maxima=nivel["profundidad_maxima"])
+        jugada, valor = resultado.jugada, resultado.valor
         pensado = time.perf_counter() - inicio
 
     # Igual que vos: la primera jugada del bot no gasta tiempo.

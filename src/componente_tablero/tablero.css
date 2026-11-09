@@ -219,3 +219,26 @@ body.mi-turno .square-55d63 { cursor: pointer; }
 body.oscuro .reloj { color: #fafafa; }
 body.oscuro .reloj .tiempo { background: #3a3b45; color: #9a9aa5; }
 body.oscuro .reloj.activo .tiempo { background: #fafafa; color: #262730; }
+
+/* ---- Calidad de tu jugada (★ ✓ ?! ? ??) ---- */
+
+#marca-calidad {
+  position: absolute;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  color: #ffffff;
+  font-weight: 800;
+  letter-spacing: -0.5px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.45);
+  pointer-events: none;   /* no tapa los clics al tablero */
+}
+#marca-calidad[hidden] { display: none; }
+/* Colores parecidos a los de Chess.com. */
+#marca-calidad.calidad-mejor { background: #5c8bb0; }
+#marca-calidad.calidad-buena { background: #77915f; }
+#marca-calidad.calidad-imprecisión { background: #e6b422; }
+#marca-calidad.calidad-error { background: #e58f2a; }
+#marca-calidad.calidad-error-grave { background: #ca3431; }

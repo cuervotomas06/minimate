@@ -80,6 +80,20 @@ LIMITE_REVISION = 1000
 
 SIMBOLOS = {"error grave": "??", "error": "?", "imprecisión": "?!", None: ""}
 
+# Calidad de cada jugada tuya (como en Chess.com). Usa los mismos umbrales que
+# la clasificación de arriba, y agrega dos para las jugadas que estuvieron bien:
+# "mejor" (la misma que eligió MiniMate) y "buena" (perdió medio peón o menos).
+CALIDADES = ["mejor", "buena", "imprecisión", "error", "error grave"]
+SIMBOLOS_CALIDAD = {"mejor": "★", "buena": "✓", "imprecisión": "?!", "error": "?",
+                    "error grave": "??"}
+
+
+def calidad_de(analisis):
+    """'mejor', 'buena', 'imprecisión', 'error' o 'error grave'."""
+    if analisis["san"] == analisis["mejor_san"]:
+        return "mejor"
+    return analisis["clasificacion"] or "buena"
+
 
 def clasificar(perdida):
     """Nombre de la clasificación según cuánto empeoró (en centipeones).
@@ -103,14 +117,44 @@ def perdida_de_la_jugada(valor_mejor, valor_mia, color):
     return max(0, perdida)  # por la poda puede salir un poquito negativo
 
 
+def analizar_jugada(tablero, jugada, indice=None, profundidad=PROFUNDIDAD_REVISION):
+    """Analiza UNA jugada (la de 'tablero.turn') comparándola con la mejor según
+    MiniMate (profundidad 2 con quietud). Es lo que hace la revisión con cada
+    jugada tuya; la app lo usa también en vivo, después de cada jugada, así
+    los dos coinciden. Devuelve el diccionario de revisar_partida."""
+    color = tablero.turn
+    mejor, valor_mejor = mejor_jugada(tablero, profundidad, con_quietud=True,
+                                      devolver_valor=True)
+    if jugada == mejor:
+        valor_mia = valor_mejor  # jugaste la mejor: no hace falta buscar de nuevo
+    else:
+        valor_mia = valor_jugada(tablero, jugada, profundidad, con_quietud=True)
+    perdida = perdida_de_la_jugada(valor_mejor, valor_mia, color)
+    analisis = {
+        "indice": indice,
+        "numero": tablero.fullmove_number,
+        "san": tablero.san(jugada),
+        "mejor_san": tablero.san(mejor),
+        "mejor_uci": mejor.uci(),
+        "valor_antes": alejar_mate(valor_mejor),
+        "valor": valor_mia,
+        "perdida": perdida,
+        "clasificacion": clasificar(perdida),
+    }
+    analisis["calidad"] = calidad_de(analisis)
+    return analisis
+
+
 def revisar_partida(jugadas, color, inicial=None, profundidad=PROFUNDIDAD_REVISION,
-                    al_avanzar=None):
+                    al_avanzar=None, previos=None):
     """Analiza cada jugada tuya (color) de la partida.
 
     jugadas: lista de chess.Move desde la posición inicial.
     inicial: tablero de la posición inicial (si es None, la de siempre).
     al_avanzar(hechas, total): se llama después de cada jugada analizada
     (la app lo usa para la barra de progreso).
+    previos: {indice: análisis} ya hechos (por ejemplo, en vivo durante la
+    partida). Esos no se vuelven a calcular.
 
     Devuelve una lista con un diccionario por cada jugada tuya:
       indice        posición de la jugada en la lista (0 = primera de la partida)
@@ -122,6 +166,7 @@ def revisar_partida(jugadas, color, inicial=None, profundidad=PROFUNDIDAD_REVISI
       valor         evaluación después de tu jugada (desde blancas)
       perdida       centipeones que perdiste
       clasificacion 'imprecisión' / 'error' / 'error grave' / None
+      calidad       'mejor' / 'buena' / 'imprecisión' / 'error' / 'error grave'
     """
     tablero = chess.Board() if inicial is None else inicial.copy()
 
@@ -131,27 +176,14 @@ def revisar_partida(jugadas, color, inicial=None, profundidad=PROFUNDIDAD_REVISI
     total = sum(1 for i in range(len(jugadas)) if (i % 2 == 0) == empezas_vos)
 
     resultado = []
+    previos = previos or {}
     for indice, jugada in enumerate(jugadas):
         if tablero.turn == color:
-            mejor, valor_mejor = mejor_jugada(tablero, profundidad, con_quietud=True,
-                                              devolver_valor=True)
-            if jugada == mejor:
-                valor_mia = valor_mejor  # jugaste la mejor: no hace falta buscar de nuevo
+            hecho = previos.get(indice)
+            if hecho is not None and hecho["san"] == tablero.san(jugada):
+                resultado.append(hecho)          # ya analizada (en vivo)
             else:
-                valor_mia = valor_jugada(tablero, jugada, profundidad, con_quietud=True)
-
-            perdida = perdida_de_la_jugada(valor_mejor, valor_mia, color)
-            resultado.append({
-                "indice": indice,
-                "numero": tablero.fullmove_number,
-                "san": tablero.san(jugada),
-                "mejor_san": tablero.san(mejor),
-                "mejor_uci": mejor.uci(),
-                "valor_antes": alejar_mate(valor_mejor),
-                "valor": valor_mia,
-                "perdida": perdida,
-                "clasificacion": clasificar(perdida),
-            })
+                resultado.append(analizar_jugada(tablero, jugada, indice, profundidad))
             if al_avanzar is not None:
                 al_avanzar(len(resultado), total)
         tablero.push(jugada)

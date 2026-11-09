@@ -23,6 +23,7 @@ import hashlib
 import io
 import math
 import os
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -430,7 +431,7 @@ COLUMNAS_PARTIDAS = [
 COLUMNAS_JUGADAS = [
     "partida", "origen", "fecha", "indice", "numero", "color", "es_mia", "san", "uci",
     "fen_antes", "reloj_restante", "eval_antes", "eval_despues", "mate_despues",
-    "perdida", "clasificacion", "fase", "pieza_colgada", "captura_perdida",
+    "perdida", "clasificacion", "fase", "pieza_colgada", "captura_perdida", "calidad",
 ]
 
 
@@ -603,6 +604,8 @@ def leer_pgn(fuente, origen=None, usuario=None, evaluar=False, cache=None, al_av
                 # Patrones: solo para tus jugadas (en las del rival quedan vacíos).
                 "pieza_colgada": colgo_pieza(antes, nodo.move) if es_mia else None,
                 "captura_perdida": dejo_pasar_captura(antes, nodo.move) if es_mia else None,
+                # La calidad que mostró la app en vivo (★ ✓ ?! ? ??), si se guardó.
+                "calidad": calidad_del_comentario(nodo.comment) if es_mia else None,
             })
 
         if al_avanzar is not None:
@@ -657,6 +660,18 @@ ENTERAS = {"cantidad_jugadas", "jugada_enroque", "menores_desarrolladas", "mi_el
            "elo_rival", "indice", "numero", "mate_despues"}
 
 
+_CALIDAD = re.compile(r"\[%calidad (\w+)\]")
+CALIDADES_DEL_PGN = {"mejor": "mejor", "buena": "buena", "imprecision": "imprecisión",
+                     "error": "error", "error_grave": "error grave"}
+
+
+def calidad_del_comentario(comentario):
+    """'mejor', 'buena', 'imprecisión', 'error' o 'error grave', leída del
+    comentario [%calidad ...] que guarda la app (None si no hay)."""
+    encontrada = _CALIDAD.search(comentario or "")
+    return CALIDADES_DEL_PGN.get(encontrada.group(1)) if encontrada else None
+
+
 def fila_para_base(fila, columnas):
     """Un diccionario listo para mandar en JSON: sin NaN y con enteros de verdad."""
     resultado = {}
@@ -673,12 +688,17 @@ def filas_para_base(partidas, jugadas):
     con las columnas de las tablas de Supabase."""
     columnas_partida = [c for c in COLUMNAS_PARTIDAS if c != "partida"] + ["pgn"]
     columnas_jugada = [c for c in COLUMNAS_JUGADAS if c not in ("partida", "origen", "fecha")]
+    sin_calidad = [c for c in columnas_jugada if c != "calidad"]
     resultado = []
     for _, partida in partidas.iterrows():
         suyas = jugadas[jugadas["partida"] == partida["partida"]]
         resultado.append((
             fila_para_base(partida.to_dict(), columnas_partida),
-            [fila_para_base(j.to_dict(), columnas_jugada) for _, j in suyas.iterrows()],
+            # Sin calidad (partidas importadas) no mandamos esa columna: así
+            # funciona aunque todavía no hayas corrido migracion_02_calidad.sql.
+            [fila_para_base(j.to_dict(), columnas_jugada if suyas["calidad"].notna().any()
+                            else sin_calidad)
+             for _, j in suyas.iterrows()],
         ))
     return resultado
 

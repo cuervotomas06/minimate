@@ -40,8 +40,18 @@ def tiempo_para_esta_jugada(restante, incremento):
     return min(presupuesto, restante / 2)
 
 
+def tiempo_para_el_bot(tiempo_del_nivel, restante, incremento):
+    """Cuántos segundos piensa el bot en esta jugada con reloj: lo que dice su
+    nivel, pero nunca más de lo que le toca según el reloj (ver
+    tiempo_para_esta_jugada: como mucho la mitad de lo que le queda). La
+    búsqueda corta sola al llegar a ese tiempo (src/busqueda.py), así que el
+    bot no pierde por tiempo."""
+    return max(0.01, min(tiempo_del_nivel, tiempo_para_esta_jugada(restante, incremento)))
+
+
 def profundidad_segun_reloj(profundidad, con_quietud, restante, incremento):
-    """La profundidad del nivel, o menos si no le alcanza el tiempo.
+    """(La usaba el motor de profundidad fija; ahora sirve para medir_elo.py
+    --version actual.) La profundidad del nivel, o menos si no le alcanza el tiempo.
     Bajamos de a una hasta que lo estimado entre en el presupuesto.
     Profundidad 1 es lo mínimo: alguna jugada tiene que hacer."""
     presupuesto = tiempo_para_esta_jugada(restante, incremento)
